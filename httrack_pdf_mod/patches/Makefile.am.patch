@@ -1,0 +1,18 @@
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -61,6 +61,7 @@
+ 	htsname.c htsrobots.c htstools.c htswizard.c \
+ 	htsalias.c htsthread.c htsindex.c htsbauth.c \
+ 	htsmd5.c htszlib.c htswrap.c htsconcat.c \
++	httrack_pdf.c \
+ 	htsmodules.c htscharset.c punycode.c htsencoding.c \
+ 	md5.c \
+ 	minizip/ioapi.c minizip/mztools.c minizip/unzip.c minizip/zip.c \
+@@ -68,6 +69,7 @@
+ 	htsbasenet.h htsbauth.h htscache.h htscatchurl.h  \
+ 	htsconfig.h htscore.h htsparse.h htscoremain.h htsdefines.h  \
+ 	htsfilters.h htsftp.h htsglobal.h htshash.h coucal/coucal.h \
++	httrack_pdf.h \
+ 	htshelp.h htsindex.h htslib.h htsmd5.h \
+ 	htsmodules.h htsname.h htsnet.h \
+ 	htsopt.h htsrobots.h htsthread.h  \
