@@ -97,7 +97,8 @@ httrack_pdf_test.exe "C:\my_mirror" "export,merge,clean=lj,pagesize=A4,concurren
 ```
 
 Строка опций (через запятую): `export`, `merge`, `noimg`,
-`clean=lj|generic|off`, `pagesize=A4`, `concurrency=N`, `timeout=сек`,
+`clean=lj|generic|off`, `nocomments` (по умолчанию комментарии
+**сохраняются**), `pagesize=A4`, `concurrency=N`, `timeout=сек`,
 `chrome=<путь>`, `gs=<путь>`, `mergefile=<путь>`, `kill=cls1,cls2`.
 
 В standalone-режиме HTML сначала переписываются «начисто» на месте (как это
@@ -182,6 +183,8 @@ httrack "https://user.livejournal.com/" -O C:\out ^
 | `--pdf-export` | включить конвертацию после зеркалирования |
 | `--pdf-merge` | объединить все PDF в `book.pdf` с оглавлением (нужен Ghostscript) |
 | `--pdf-no-images` | вырезать `<img>/<picture>` (уменьшить размер) |
+| `--pdf-keep-comments` | сохранять комментарии (по умолчанию включено) |
+| `--pdf-drop-comments` | удалить комментарии |
 | `--pdf-page-size A4` | формат страницы (A4/Letter/Legal/A3/…) |
 | `--pdf-concurrency N` | параллельные процессы браузера (1..8) |
 | `--pdf-clean lj\|generic\|off` | стратегия очистки HTML |
@@ -206,6 +209,14 @@ httrack "https://user.livejournal.com/" -O C:\out ^
   `articleBody`, …), берётся `<head>` (с CSS) + тело статьи, затем к
   результату применяется generic-очистка. Если маркер не найден — fallback
   на generic.
+- **Комментарии сохраняются по умолчанию** (в них часто много полезного).
+  В generic-режиме блоки с классами `comment*`/`disqus`/`discussion` не
+  считаются мусором; в **lj**-режиме после тела статьи дополнительно
+  находится и подклеивается ветка комментариев (контейнеры `b-tree`,
+  `comments-area`, `commentlist`, `b-singlepost-comments`, `aentry-comments`,
+  …) под заголовком «Комментарии». Реклама, спрятанная внутри ветки
+  комментариев (напр. `class="comment b-ads"`), всё равно удаляется.
+  Отключить комментарии: `nocomments` / `--pdf-drop-comments`.
 - В `<head>` внедряется печатный стиль: `@page{size:<pagesize>;margin:12mm}`
   и `print-color-adjust:exact` (чтобы фон/картинки печатались).
 - Доп. классы под свой сайт: `kill=class1,class2` (wrapper) — подстроки
@@ -279,6 +290,9 @@ libxml2/Readability (см. «Альтернативы»).
   `sidebar`, `comments`, `footer`, `nav`, `<script>`; извлечён
   `.entry-content`; сохранены CSS, относительная картинка и `<title>`;
   внедрён `@page A4`.
+- ✅ Комментарии: по умолчанию ветка комментариев сохраняется и
+  подклеивается после статьи (реальные комментарии остаются, рекламный
+  «коммент» с классом `b-ads` удаляется); с `nocomments` — ветка убирается.
 - ✅ Конвейер `htspdf_export_dir`: рекурсивный обход подпапок, параллельная
   конвертация (concurrency=3), коды возврата, таймауты, лог.
 - ✅ Объединение через Ghostscript 10: `book.pdf` с деревом закладок;

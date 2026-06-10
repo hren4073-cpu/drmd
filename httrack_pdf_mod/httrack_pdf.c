@@ -108,6 +108,7 @@ void htspdf_config_defaults(htspdf_config *cfg) {
   cfg->enabled = 1;
   cfg->do_merge = 0;
   cfg->no_images = 0;
+  cfg->keep_comments = 1;       /* comments often hold useful info -> keep */
   cfg->concurrency = 4;
   cfg->timeout_sec = 30;
   cfg->clean = HTSPDF_CLEAN_GENERIC;
@@ -159,6 +160,14 @@ int htspdf_config_parse(htspdf_config *cfg, const char *args) {
       cfg->do_merge = 1;
     } else if (strcmp(key, "noimg") == 0 || strcmp(key, "no-images") == 0) {
       cfg->no_images = 1;
+    } else if (strcmp(key, "nocomments") == 0 ||
+               strcmp(key, "dropcomments") == 0 ||
+               strcmp(key, "no-comments") == 0) {
+      cfg->keep_comments = 0;
+    } else if (strcmp(key, "keepcomments") == 0 ||
+               strcmp(key, "comments") == 0 ||
+               strcmp(key, "keep-comments") == 0) {
+      cfg->keep_comments = 1;
     } else if (strcmp(key, "concurrency") == 0 && val) {
       cfg->concurrency = atoi(val);
       if (cfg->concurrency < 1) cfg->concurrency = 1;
@@ -370,6 +379,12 @@ static int attrs_are_clutter(const char *vals, const htspdf_config *cfg) {
     strncpy(low, t, sizeof(low) - 1);
     low[sizeof(low) - 1] = '\0';
     str_tolower(low);
+    /* When comments are kept, a comment-ish token must not flag the element
+       as clutter (other tokens on the same element are still evaluated). */
+    if (cfg->keep_comments &&
+        (strstr(low, "comment") != NULL || strstr(low, "disqus") != NULL ||
+         strstr(low, "discussion") != NULL))
+      continue;
     for (int i = 0; exact[i]; i++)
       if (strcmp(low, exact[i]) == 0)
         return 1;
@@ -553,31 +568,15 @@ static char *clean_generic(const char *s, size_t len,
   return out.p;
 }
 
-/* Locate the article body for LiveJournal-like blogs and rebuild a minimal
-   document. Falls back to generic cleaning if the marker is not found. */
-static char *clean_livejournal(const char *s, size_t len,
-                               const htspdf_config *cfg, size_t *out_len) {
-  static const char *markers[] = {
-    "entry-content", "b-singlepost-body", "aentry-post__text",
-    "j-e-text", "articleBody", "post__text", "entryContent", NULL
-  };
-
-  /* find <head>..</head> (kept verbatim, CSS preserved) */
-  const char *hs = ci_find(s, len, "<head");
-  const char *he = ci_find(s, len, "</head>");
-  size_t head_off = 0, head_end = 0;
-  if (hs && he && he > hs) {
-    head_off = (size_t) (hs - s);
-    head_end = (size_t) (he - s) + 7;
-  }
-
-  /* scan for the content element */
-  size_t i = 0, cstart = 0, cend = 0;
+/* Find the first element (at/after `from`) whose class/id contains one of
+   `markers`, and return its subtree span [*bstart, *bend). Returns 1 if found. */
+static int lj_find_block(const char *s, size_t len, const char **markers,
+                         size_t from, size_t *bstart, size_t *bend) {
+  size_t i = from, cstart = 0;
   char name[64], cname[64] = "";
   while (i < len) {
     if (s[i] != '<') { i++; continue; }
-    size_t end;
-    int ic, sc;
+    size_t end; int ic, sc;
     if (!parse_tag(s, len, i, &end, name, sizeof(name), &ic, &sc)) { i++; continue; }
     if (!ic && name[0] != '!') {
       sbuf vals = { 0 };
@@ -592,48 +591,70 @@ static char *clean_livejournal(const char *s, size_t len,
           strncpy(lm, markers[m], sizeof(lm) - 1);
           lm[sizeof(lm) - 1] = '\0';
           str_tolower(lm);
-          if (strstr(low, lm)) {
-            cstart = i;
-            strcpy(cname, name);
-            break;
-          }
+          if (strstr(low, lm)) { cstart = i; strcpy(cname, name); break; }
         }
       }
       free(vals.p);
-      if (cstart)
-        break;
+      if (cstart) break;
     }
     i = end;
   }
+  if (!cstart) return 0;
 
-  if (!cstart) {
+  /* find the matching close tag of cname (depth tracked) */
+  int depth = 1;
+  size_t e0; int ic0, sc0; char nm0[64];
+  parse_tag(s, len, cstart, &e0, nm0, sizeof(nm0), &ic0, &sc0);
+  size_t j = e0;
+  char nm[64];
+  while (j < len && depth > 0) {
+    if (s[j] != '<') { j++; continue; }
+    size_t e2; int ic, sc;
+    if (!parse_tag(s, len, j, &e2, nm, sizeof(nm), &ic, &sc)) { j++; continue; }
+    if (nm[0] != '!' && strcmp(nm, cname) == 0) {
+      if (ic) depth--;
+      else if (!sc && !is_void_element(nm)) depth++;
+    }
+    j = e2;
+  }
+  *bstart = cstart;
+  *bend = j;
+  return 1;
+}
+
+/* Locate the article body for LiveJournal-like blogs and rebuild a minimal
+   document. Falls back to generic cleaning if the marker is not found.
+   When cfg->keep_comments is set, the comment thread is appended after the
+   article (comments often carry a lot of useful information). */
+static char *clean_livejournal(const char *s, size_t len,
+                               const htspdf_config *cfg, size_t *out_len) {
+  static const char *content_markers[] = {
+    "entry-content", "b-singlepost-body", "aentry-post__text",
+    "j-e-text", "articleBody", "post__text", "entryContent", NULL
+  };
+  /* comment-thread containers across LJ skins / Dreamwidth / generic blogs */
+  static const char *comment_markers[] = {
+    "b-tree", "b-singlepost-comments", "aentry-comments", "entry-comments",
+    "comments-wrapper", "commentlist", "comment-list", "comments-area",
+    "comments", "discussion", "comment-section", NULL
+  };
+
+  /* find <head>..</head> (kept verbatim, CSS preserved) */
+  const char *hs = ci_find(s, len, "<head");
+  const char *he = ci_find(s, len, "</head>");
+  size_t head_off = 0, head_end = 0;
+  if (hs && he && he > hs) {
+    head_off = (size_t) (hs - s);
+    head_end = (size_t) (he - s) + 7;
+  }
+
+  size_t cstart = 0, cend = 0;
+  if (!lj_find_block(s, len, content_markers, 0, &cstart, &cend)) {
     /* not a recognizable article -> generic cleaning */
     return clean_generic(s, len, cfg, out_len);
   }
 
-  /* find matching close of cname */
-  {
-    int depth = 1;
-    size_t j;
-    /* move j to just after the content start tag */
-    size_t e0; int ic0, sc0; char nm0[64];
-    parse_tag(s, len, cstart, &e0, nm0, sizeof(nm0), &ic0, &sc0);
-    j = e0;
-    char nm[64];
-    while (j < len && depth > 0) {
-      if (s[j] != '<') { j++; continue; }
-      size_t e2; int ic, sc;
-      if (!parse_tag(s, len, j, &e2, nm, sizeof(nm), &ic, &sc)) { j++; continue; }
-      if (nm[0] != '!' && strcmp(nm, cname) == 0) {
-        if (ic) depth--;
-        else if (!sc && !is_void_element(nm)) depth++;
-      }
-      j = e2;
-    }
-    cend = j;
-  }
-
-  /* compose minimal document: doctype + head + body(article) */
+  /* compose minimal document: doctype + head + body(article [+ comments]) */
   sbuf doc = { 0 };
   sb_puts(&doc, "<!DOCTYPE html>\n<html>\n");
   if (head_end > head_off) {
@@ -643,6 +664,18 @@ static char *clean_livejournal(const char *s, size_t len,
   }
   sb_puts(&doc, "\n<body>\n");
   sb_putn(&doc, s + cstart, cend - cstart);
+
+  if (cfg->keep_comments) {
+    /* look for the comment thread after the article body */
+    size_t kstart = 0, kend = 0;
+    if (lj_find_block(s, len, comment_markers, cend, &kstart, &kend) &&
+        kend > kstart) {
+      sb_puts(&doc, "\n<hr style=\"margin:24px 0\">\n"
+                    "<h2 class=\"htspdf-comments-title\">Комментарии</h2>\n");
+      sb_putn(&doc, s + kstart, kend - kstart);
+    }
+  }
+
   sb_puts(&doc, "\n</body>\n</html>\n");
 
   /* run generic cleaning over the extracted article (drops nested ads, JS,
@@ -1497,6 +1530,7 @@ static void usage(const char *p) {
     "  export            do the conversion (default on)\n"
     "  merge             merge all PDFs into <dir>/book.pdf (needs ghostscript)\n"
     "  clean=lj|generic|off   HTML cleaning strategy\n"
+    "  nocomments        drop reader comments (kept by default)\n"
     "  noimg             strip images\n"
     "  pagesize=A4       page format\n"
     "  concurrency=N     parallel browsers (1..8)\n"

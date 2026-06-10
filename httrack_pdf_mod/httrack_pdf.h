@@ -43,6 +43,8 @@ typedef struct htspdf_config {
   int  enabled;            /* master switch: do the PDF export at end       */
   int  do_merge;           /* merge all PDFs into one book                  */
   int  no_images;          /* strip <img>/<picture> during cleaning        */
+  int  keep_comments;      /* keep reader comments (default 1); in LJ mode  */
+                           /* the comment thread is appended after the body */
   int  concurrency;        /* parallel headless processes (1..8)            */
   int  timeout_sec;        /* per-file conversion timeout (seconds)         */
   htspdf_clean_mode clean; /* cleaning strategy                            */
