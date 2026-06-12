@@ -1,8 +1,11 @@
 httrack_pdf_test
 httrack_pdf_test.exe
+httrack2pdf
+httrack2pdf.exe
 *.so
 *.dll
 *.o
 *.lo
 *.pdf
 pdf_errors.log
+chromium/

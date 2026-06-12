@@ -47,6 +47,9 @@ typedef struct htspdf_config {
                            /* the comment thread is appended after the body */
   int  concurrency;        /* parallel headless processes (1..8)            */
   int  timeout_sec;        /* per-file conversion timeout (seconds)         */
+  int  autorun;            /* if no browser is found, auto-download a        */
+                           /* portable headless Chromium next to the exe     */
+                           /* (first run only). Default 1.                   */
   htspdf_clean_mode clean; /* cleaning strategy                            */
   char page_size[16];      /* "A4", "Letter", "Legal", "A3", ... ("" = def) */
   char chrome_path[1024];  /* explicit browser path ("" = autodetect)      */

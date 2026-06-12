@@ -8,7 +8,7 @@
  
  #include "htsglobal.h"
  #include "htscore.h"
-@@ -197,6 +198,47 @@
+@@ -197,6 +198,49 @@
    /* Init root dir */
    hts_rootdir(argv[0]);
  
@@ -29,6 +29,8 @@
 +        strcat(pdfcfg, "keepcomments,"); have_pdf = 1;
 +      } else if (strcmp(a, "--pdf-drop-comments") == 0) {
 +        strcat(pdfcfg, "nocomments,"); have_pdf = 1;
++      } else if (strcmp(a, "--pdf-no-autorun") == 0) {
++        strcat(pdfcfg, "noautorun,"); have_pdf = 1;
 +      } else if (strcmp(a, "--pdf-page-size") == 0 && r + 1 < argc) {
 +        strcat(pdfcfg, "pagesize="); strcat(pdfcfg, argv[++r]);
 +        strcat(pdfcfg, ","); have_pdf = 1;

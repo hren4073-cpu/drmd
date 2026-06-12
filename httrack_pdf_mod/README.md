@@ -62,9 +62,42 @@
 
 | Режим | Результат | Когда использовать |
 |---|---|---|
-| **standalone** | `httrack_pdf_test` | Прогнать конвейер на уже скачанном зеркале без пересборки HTTrack (быстрый тест на 900+ файлах). HTTrack-заголовки не нужны. |
+| **exe (autorun)** | `httrack2pdf.exe` | Самодостаточный .exe для конечного пользователя: статически слинкован, при первом запуске сам докачивает headless Chromium. Не требует установки браузера/Node/Python. |
+| **standalone** | `httrack_pdf_test` | Тот же код, dev-сборка для отладки на уже скачанном зеркале. |
 | **plugin** | `httrack_pdf.so` / `.dll` | Подключить к готовому HTTrack через `--wrapper`, без пересборки ядра. |
 | **integrated** | `httrack(.exe)` с нативными `--pdf-*` | Полноценная интеграция в ядро по ТЗ. |
+
+### Самодостаточный .exe с авто-запуском (autorun)
+
+```bat
+:: Windows: нужен только MinGW-w64 gcc в PATH (проще всего через MSYS2)
+build-win.bat
+:: -> httrack2pdf.exe  (статический, без сторонних DLL)
+```
+```sh
+# Linux
+./build-linux.sh        # или: make exe
+```
+
+**Что значит «autorun»:** на машине пользователя может не быть браузера. При
+первом запуске `httrack2pdf.exe`, если Chrome/Edge/Chromium не найден,
+**сам скачивает портативный `chrome-headless-shell`** (Chrome for Testing,
+stable) в подпапку `chromium\` рядом с собой и дальше использует его.
+Скачивание происходит **один раз**; интернет затем не нужен. Отключить —
+опцией `noautorun` (или `--pdf-no-autorun` в интегрированной сборке).
+
+- На Windows загрузка идёт встроенным PowerShell (`Invoke-WebRequest` +
+  `Expand-Archive`) — ничего ставить не надо.
+- На Linux нужны `curl`, `python3`, `unzip` (есть почти везде).
+- `chrome-headless-shell` — это «печатающая» сборка Chromium: она надёжно
+  отрабатывает `--print-to-pdf` и сама завершается.
+
+Пример:
+```bat
+httrack2pdf.exe "C:\my_mirror" "export,merge,clean=lj,pagesize=A4,concurrency=4"
+```
+Первый запуск: `[info] no browser found - downloading portable headless
+Chromium ...` → `[ok] headless Chromium ready` → конвертация.
 
 ---
 
@@ -72,9 +105,11 @@
 
 - **Компилятор C**: MinGW-w64 (Windows) или gcc/clang (Linux). Стандарт
   `-std=gnu99` (HTTrack использует расширения GNU, напр. `typeof`).
-- **Headless-браузер** на машине пользователя: Google Chrome **или** Microsoft
-  Edge (в Windows 10/11 уже есть Edge) либо Chromium. Автопоиск в PATH и в
-  стандартных путях; можно задать явно (`chrome=...` / `--pdf-chrome=...`).
+- **Headless-браузер**: Google Chrome / Microsoft Edge / Chromium. Автопоиск
+  в PATH и стандартных путях; можно задать явно (`chrome=...` /
+  `--pdf-chrome=...`). Если браузера нет — при **autorun** (по умолчанию)
+  портативный `chrome-headless-shell` скачивается автоматически, так что
+  отдельно ставить ничего не нужно.
 - **Ghostscript** — только для `--pdf-merge` (Windows: `gswin64c.exe`).
   Если не найден — объединение пропускается с предупреждением, отдельные PDF
   остаются.
@@ -99,7 +134,8 @@ httrack_pdf_test.exe "C:\my_mirror" "export,merge,clean=lj,pagesize=A4,concurren
 Строка опций (через запятую): `export`, `merge`, `noimg`,
 `clean=lj|generic|off`, `nocomments` (по умолчанию комментарии
 **сохраняются**), `pagesize=A4`, `concurrency=N`, `timeout=сек`,
-`chrome=<путь>`, `gs=<путь>`, `mergefile=<путь>`, `kill=cls1,cls2`.
+`chrome=<путь>`, `noautorun` (не докачивать браузер), `gs=<путь>`,
+`mergefile=<путь>`, `kill=cls1,cls2`.
 
 В standalone-режиме HTML сначала переписываются «начисто» на месте (как это
 сделал бы коллбэк), затем печатаются в PDF. Лог — `<mirror>/pdf_errors.log`,
@@ -190,9 +226,12 @@ httrack "https://user.livejournal.com/" -O C:\out ^
 | `--pdf-clean lj\|generic\|off` | стратегия очистки HTML |
 | `--pdf-timeout N` | таймаут на файл, сек (по умолч. 30) |
 | `--pdf-chrome=<путь>` | явный путь к браузеру |
+| `--pdf-no-autorun` | не докачивать браузер автоматически |
 
 Опции `--pdf-*` вырезаются из argv до основного разбора HTTrack, поэтому не
-конфликтуют с его парсером.
+конфликтуют с его парсером. Авто-загрузка браузера (autorun) работает и в
+интегрированной сборке: если браузер не найден, он скачивается в `chromium\`
+рядом с `httrack.exe`.
 
 ---
 
@@ -295,6 +334,11 @@ libxml2/Readability (см. «Альтернативы»).
   «коммент» с классом `b-ads` удаляется); с `nocomments` — ветка убирается.
 - ✅ Конвейер `htspdf_export_dir`: рекурсивный обход подпапок, параллельная
   конвертация (concurrency=3), коды возврата, таймауты, лог.
+- ✅ **Autorun**: на чистой машине без браузера `httrack2pdf` сам скачал
+  `chrome-headless-shell` (Chrome for Testing, stable 149) в `chromium/`,
+  затем успешно напечатал PDF и объединил их; повторный запуск переиспользует
+  загруженный браузер без повторной докачки. Сборка `make exe` /
+  `build-win.bat` / `build-linux.sh` даёт самодостаточный бинарь.
 - ✅ Объединение через Ghostscript 10: `book.pdf` с деревом закладок;
   заголовки `Поездка в горы` / `Рецепт борща` / `Заметки о книгах`
   корректно закодированы в UTF-16 (`/Type /Outlines`).

@@ -1,7 +1,10 @@
 # Makefile for the httrack_pdf module (standalone test + wrapper plugin).
 #
 # Targets:
-#   make standalone   -> httrack_pdf_test     (no HTTrack needed; test a mirror)
+#   make exe          -> httrack2pdf(.exe)    (self-contained release binary;
+#                                              autorun: downloads headless
+#                                              Chromium on first run)
+#   make standalone   -> httrack_pdf_test     (dev build of the same code)
 #   make plugin       -> httrack_pdf.so/.dll  (HTTrack --wrapper plugin)
 #   make clean
 #
@@ -21,17 +24,27 @@ ifeq ($(OS),Windows_NT)
   SOEXT = dll
   PLUGIN_LDFLAGS = -shared
   STANDALONE_EXE = httrack_pdf_test.exe
+  RELEASE_BIN = httrack2pdf.exe
+  # MinGW: fully static so the .exe runs on any Windows 10/11 with no DLLs.
+  RELEASE_FLAGS = -static -static-libgcc -s
 else
   SOEXT = so
   PLUGIN_LDFLAGS = -shared -fPIC
   STANDALONE_EXE = httrack_pdf_test
+  RELEASE_BIN = httrack2pdf
+  RELEASE_FLAGS = -s
 endif
 
-.PHONY: all standalone plugin clean
+.PHONY: all exe standalone plugin clean
 
-all: standalone
+all: exe
 
-# Self-contained test tool: needs NO HTTrack headers.
+# Self-contained release binary (autorun browser bootstrap on first run).
+exe: httrack_pdf.c httrack_pdf.h
+	$(CC) $(CFLAGS) -DHTSPDF_STANDALONE $(RELEASE_FLAGS) -o $(RELEASE_BIN) httrack_pdf.c
+	@echo "[ok] built $(RELEASE_BIN)"
+
+# Dev build of the same standalone code (no extra flags).
 standalone: httrack_pdf.c httrack_pdf.h
 	$(CC) $(CFLAGS) -DHTSPDF_STANDALONE -o $(STANDALONE_EXE) httrack_pdf.c
 
@@ -41,4 +54,5 @@ plugin: httrack_pdf.c httrack_pdf.h
 	    -o httrack_pdf.$(SOEXT) httrack_pdf.c
 
 clean:
-	rm -f httrack_pdf_test httrack_pdf_test.exe httrack_pdf.so httrack_pdf.dll *.o
+	rm -f httrack_pdf_test httrack_pdf_test.exe httrack2pdf httrack2pdf.exe \
+	      httrack_pdf.so httrack_pdf.dll *.o

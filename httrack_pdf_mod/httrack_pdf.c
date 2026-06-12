@@ -111,6 +111,7 @@ void htspdf_config_defaults(htspdf_config *cfg) {
   cfg->keep_comments = 1;       /* comments often hold useful info -> keep */
   cfg->concurrency = 4;
   cfg->timeout_sec = 30;
+  cfg->autorun = 1;
   cfg->clean = HTSPDF_CLEAN_GENERIC;
   strcpy(cfg->page_size, "A4");
 }
@@ -175,6 +176,10 @@ int htspdf_config_parse(htspdf_config *cfg, const char *args) {
     } else if (strcmp(key, "timeout") == 0 && val) {
       cfg->timeout_sec = atoi(val);
       if (cfg->timeout_sec < 5) cfg->timeout_sec = 5;
+    } else if (strcmp(key, "noautorun") == 0 || strcmp(key, "no-autorun") == 0) {
+      cfg->autorun = 0;
+    } else if (strcmp(key, "autorun") == 0) {
+      cfg->autorun = 1;
     } else if ((strcmp(key, "pagesize") == 0 || strcmp(key, "page-size") == 0)
                && val) {
       strncpy(cfg->page_size, val, sizeof(cfg->page_size) - 1);
@@ -1033,6 +1038,195 @@ typedef struct {
 
 /* Build the argv vector for one conversion (NULL terminated, caller frees
    the dynamic members and the array). `slot` selects a private profile dir. */
+/* ============================================================ */
+/*  Autorun: self-bootstrap a headless Chromium on first run     */
+/* ============================================================ */
+
+/* Directory that holds the running executable (caller-supplied buffer). */
+static int get_exe_dir(char *out, size_t cap) {
+#ifdef _WIN32
+  char buf[32768];
+  DWORD n = GetModuleFileNameA(NULL, buf, sizeof(buf));
+  if (n == 0 || n >= sizeof(buf))
+    return 0;
+  char *sl = strrchr(buf, '\\');
+  if (sl) *sl = '\0';
+  strncpy(out, buf, cap - 1); out[cap - 1] = '\0';
+  return 1;
+#else
+  char buf[PATH_MAX];
+  ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (n <= 0)
+    return 0;
+  buf[n] = '\0';
+  char *sl = strrchr(buf, '/');
+  if (sl) *sl = '\0';
+  strncpy(out, buf, cap - 1); out[cap - 1] = '\0';
+  return 1;
+#endif
+}
+
+/* Find the first file named `fname` anywhere under `root`. 1 if found. */
+static int find_file_recursive(const char *root, const char *fname,
+                               char *out, size_t cap) {
+#ifdef _WIN32
+  char pattern[32768];
+  snprintf(pattern, sizeof(pattern), "%s\\*", root);
+  WIN32_FIND_DATAA fd;
+  HANDLE h = FindFirstFileA(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  do {
+    if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+      continue;
+    char full[32768];
+    snprintf(full, sizeof(full), "%s\\%s", root, fd.cFileName);
+    if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+      if (find_file_recursive(full, fname, out, cap)) { FindClose(h); return 1; }
+    } else if (strcasecmp(fd.cFileName, fname) == 0) {
+      strncpy(out, full, cap - 1); out[cap - 1] = '\0';
+      FindClose(h); return 1;
+    }
+  } while (FindNextFileA(h, &fd));
+  FindClose(h);
+  return 0;
+#else
+  DIR *d = opendir(root);
+  if (!d) return 0;
+  struct dirent *de;
+  while ((de = readdir(d)) != NULL) {
+    if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+      continue;
+    char full[8192];
+    snprintf(full, sizeof(full), "%s/%s", root, de->d_name);
+    struct stat st;
+    if (stat(full, &st) != 0) continue;
+    if (S_ISDIR(st.st_mode)) {
+      if (find_file_recursive(full, fname, out, cap)) { closedir(d); return 1; }
+    } else if (strcmp(de->d_name, fname) == 0) {
+      strncpy(out, full, cap - 1); out[cap - 1] = '\0';
+      closedir(d); return 1;
+    }
+  }
+  closedir(d);
+  return 0;
+#endif
+}
+
+/* Download + unzip a portable chrome-headless-shell into `dir`, using only
+   built-in OS tooling (PowerShell on Windows; curl+python3+unzip on POSIX).
+   Returns 1 on success. */
+static int bootstrap_browser(const char *dir, htspdf_log *lg) {
+#ifdef _WIN32
+  const char *tmp = getenv("TEMP");
+  if (!tmp || !*tmp) tmp = ".";
+  char script[4096];
+  snprintf(script, sizeof(script), "%s\\htspdf_get_chrome.ps1", tmp);
+  FILE *f = fopen(script, "wb");
+  if (!f) { log_msg(lg, "[error] cannot write bootstrap script"); return 0; }
+  fputs(
+    "param([string]$Dir)\r\n"
+    "$ErrorActionPreference='Stop'\r\n"
+    "try { [Net.ServicePointManager]::SecurityProtocol="
+      "[Net.SecurityProtocolType]::Tls12 } catch {}\r\n"
+    "$u='https://googlechromelabs.github.io/chrome-for-testing/"
+      "last-known-good-versions-with-downloads.json'\r\n"
+    "$meta=Invoke-RestMethod -Uri $u\r\n"
+    "$dl=$meta.channels.Stable.downloads.'chrome-headless-shell' | "
+      "Where-Object { $_.platform -eq 'win64' } | Select-Object -First 1\r\n"
+    "if(-not $dl){ throw 'no win64 build' }\r\n"
+    "New-Item -ItemType Directory -Force -Path $Dir | Out-Null\r\n"
+    "$zip=Join-Path $env:TEMP 'htspdf_chs.zip'\r\n"
+    "Invoke-WebRequest -Uri $dl.url -OutFile $zip\r\n"
+    "Expand-Archive -Path $zip -DestinationPath $Dir -Force\r\n"
+    "Remove-Item $zip -Force\r\n"
+    "Write-Host 'OK'\r\n", f);
+  fclose(f);
+  char cmd[8192];
+  snprintf(cmd, sizeof(cmd),
+           "powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\" \"%s\"",
+           script, dir);
+  int rc = system(cmd);
+  remove(script);
+  return rc == 0;
+#else
+  char script[4096];
+  snprintf(script, sizeof(script), "/tmp/htspdf_get_chrome.sh");
+  FILE *f = fopen(script, "wb");
+  if (!f) { log_msg(lg, "[error] cannot write bootstrap script"); return 0; }
+  fputs(
+    "#!/bin/sh\n"
+    "set -e\n"
+    "DIR=\"$1\"\n"
+    "JSON=https://googlechromelabs.github.io/chrome-for-testing/"
+      "last-known-good-versions-with-downloads.json\n"
+    "URL=$(curl -fsSL \"$JSON\" | python3 -c \"import sys,json;"
+      "d=json.load(sys.stdin);"
+      "print(next(x['url'] for x in "
+      "d['channels']['Stable']['downloads']['chrome-headless-shell'] "
+      "if x['platform']=='linux64'))\")\n"
+    "mkdir -p \"$DIR\"\n"
+    "curl -fsSL -o /tmp/htspdf_chs.zip \"$URL\"\n"
+    "( cd \"$DIR\" && unzip -oq /tmp/htspdf_chs.zip )\n"
+    "rm -f /tmp/htspdf_chs.zip\n"
+    "echo OK\n", f);
+  fclose(f);
+  char cmd[8192];
+  snprintf(cmd, sizeof(cmd), "sh \"%s\" \"%s\"", script, dir);
+  int rc = system(cmd);
+  remove(script);
+  return rc == 0;
+#endif
+}
+
+/* Resolve a usable browser: explicit/system first, then a previously
+   downloaded portable copy, then (if autorun) download one. 1 on success. */
+static int ensure_browser(const htspdf_config *cfg, htspdf_log *lg,
+                          char *out, size_t cap) {
+  if (detect_browser(cfg, out, cap))
+    return 1;
+
+  char exedir[4096], dir[4200];
+  if (get_exe_dir(exedir, sizeof(exedir)))
+    snprintf(dir, sizeof(dir), "%s%cchromium", exedir, HTSPDF_PATHSEP);
+  else
+    snprintf(dir, sizeof(dir), "chromium");
+
+#ifdef _WIN32
+  const char *shell_name = "chrome-headless-shell.exe";
+  const char *full_name = "chrome.exe";
+#else
+  const char *shell_name = "chrome-headless-shell";
+  const char *full_name = "chrome";
+#endif
+
+  /* already bootstrapped earlier? */
+  if (find_file_recursive(dir, shell_name, out, cap)) return 1;
+  if (find_file_recursive(dir, full_name, out, cap)) return 1;
+
+  if (!cfg->autorun) {
+    log_msg(lg, "[warn] no browser found and autorun is disabled - "
+                "install Chrome/Edge or pass chrome=<path>");
+    return 0;
+  }
+
+  log_msg(lg, "[info] no browser found - downloading portable headless "
+              "Chromium into %s (first run only, ~150 MB)...", dir);
+  if (bootstrap_browser(dir, lg) &&
+      find_file_recursive(dir, shell_name, out, cap)) {
+    log_msg(lg, "[ok] headless Chromium ready: %s", out);
+    return 1;
+  }
+  log_msg(lg, "[warn] automatic browser download failed - check network or "
+              "install Chrome/Edge manually (PDF export skipped)");
+  return 0;
+}
+
+/* chrome-headless-shell is already headless and rejects the --headless flag. */
+static int is_headless_shell(const char *browser) {
+  return strstr(browser, "headless-shell") != NULL ||
+         strstr(browser, "headless_shell") != NULL;
+}
+
 static char **build_argv(const char *browser, const htspdf_task *t,
                          const htspdf_config *cfg, int slot,
                          const char *root) {
@@ -1053,11 +1247,16 @@ static char **build_argv(const char *browser, const htspdf_task *t,
     "--print-to-pdf-no-header",
   };
   int nfixed = (int) (sizeof(fixed) / sizeof(fixed[0]));
+  /* chrome-headless-shell must NOT receive the --headless flag (index 0). */
+  int skip_headless = is_headless_shell(browser);
   int n = 0;
   char **argv = (char **) calloc(nfixed + 5, sizeof(char *));
   argv[n++] = strdup(browser);
-  for (int i = 0; i < nfixed; i++)
+  for (int i = 0; i < nfixed; i++) {
+    if (i == 0 && skip_headless)
+      continue;
     argv[n++] = strdup(fixed[i]);
+  }
   argv[n++] = profile;          /* already malloc'd */
   argv[n++] = p_pdf;            /* already malloc'd */
   argv[n++] = url;              /* already malloc'd */
@@ -1361,9 +1560,8 @@ int htspdf_export_dir(const char *root, const htspdf_config *cfg) {
   log_open(&lg, root);
 
   char browser[1024];
-  if (!detect_browser(cfg, browser, sizeof(browser))) {
-    log_msg(&lg, "[warn] no Chrome/Chromium/Edge found - PDF export skipped. "
-                 "Install Chrome or set chrome=<path>.");
+  if (!ensure_browser(cfg, &lg, browser, sizeof(browser))) {
+    /* ensure_browser already logged the reason */
     log_close(&lg);
     return 0;
   }
@@ -1536,6 +1734,7 @@ static void usage(const char *p) {
     "  concurrency=N     parallel browsers (1..8)\n"
     "  timeout=N         per-file timeout seconds\n"
     "  chrome=<path>     explicit browser path\n"
+    "  noautorun         do NOT auto-download a browser if none is found\n"
     "  gs=<path>         explicit ghostscript path\n"
     "  clean-also: when cleaning, *.html are rewritten in place first\n",
     p);
