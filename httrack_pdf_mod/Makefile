@@ -1,9 +1,11 @@
 # Makefile for the httrack_pdf module (standalone test + wrapper plugin).
 #
 # Targets:
-#   make exe          -> httrack2pdf(.exe)    (self-contained release binary;
+#   make exe          -> httrack2pdf(.exe)    (self-contained CLI release binary;
 #                                              autorun: downloads headless
 #                                              Chromium on first run)
+#   make gui          -> httrack2pdf.exe      (Windows GUI version with Win32
+#                                              window; MinGW only)
 #   make standalone   -> httrack_pdf_test     (dev build of the same code)
 #   make plugin       -> httrack_pdf.so/.dll  (HTTrack --wrapper plugin)
 #   make clean
@@ -35,14 +37,26 @@ else
   RELEASE_FLAGS = -s
 endif
 
-.PHONY: all exe standalone plugin clean
+.PHONY: all exe gui standalone plugin clean
 
 all: exe
 
-# Self-contained release binary (autorun browser bootstrap on first run).
+# Self-contained CLI release binary (autorun browser bootstrap on first run).
 exe: httrack_pdf.c httrack_pdf.h
 	$(CC) $(CFLAGS) -DHTSPDF_STANDALONE $(RELEASE_FLAGS) -o $(RELEASE_BIN) httrack_pdf.c
 	@echo "[ok] built $(RELEASE_BIN)"
+
+# Win32 GUI binary (Windows / MinGW only).
+gui: httrack_pdf_gui.c httrack_pdf.c httrack_pdf.h
+ifeq ($(OS),Windows_NT)
+	$(CC) $(CFLAGS) -DHTSPDF_STANDALONE -DHTSPDF_GUI \
+	    -static -static-libgcc -s -mwindows \
+	    -o httrack2pdf.exe httrack_pdf_gui.c httrack_pdf.c \
+	    -lcomdlg32 -lshell32 -lole32 -lcomctl32
+	@echo "[ok] built httrack2pdf.exe (GUI)"
+else
+	@echo "[skip] 'make gui' is Windows-only (MinGW). Use 'make exe' on Linux."
+endif
 
 # Dev build of the same standalone code (no extra flags).
 standalone: httrack_pdf.c httrack_pdf.h

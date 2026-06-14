@@ -54,6 +54,11 @@
 #define PATH_MAX 4096
 #endif
 
+/* ── Global hooks (set by GUI front-end, otherwise NULL/0) ── */
+void (*htspdf_log_cb)(const char *msg, void *ud) = NULL;
+void *htspdf_log_ud = NULL;
+volatile int htspdf_cancel = 0;
+
 /* ============================================================ */
 /*  Small dynamic string buffer                                  */
 /* ============================================================ */
@@ -1005,19 +1010,23 @@ static void log_open(htspdf_log *lg, const char *root) {
 }
 
 static void log_msg(htspdf_log *lg, const char *fmt, ...) {
+  char buf[4096];
   va_list ap;
   va_start(ap, fmt);
-  if (lg->fp) {
-    va_list cp;
-    va_copy(cp, ap);
-    vfprintf(lg->fp, fmt, cp);
-    fputc('\n', lg->fp);
-    fflush(lg->fp);
-    va_end(cp);
-  }
-  vfprintf(stderr, fmt, ap);
-  fputc('\n', stderr);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
   va_end(ap);
+  buf[sizeof(buf) - 1] = '\0';
+
+  if (lg && lg->fp) {
+    fprintf(lg->fp, "%s\n", buf);
+    fflush(lg->fp);
+  }
+  if (htspdf_log_cb) {
+    htspdf_log_cb(buf, htspdf_log_ud);
+  } else {
+    fprintf(stderr, "%s\n", buf);
+    fflush(stderr);
+  }
 }
 
 static void log_close(htspdf_log *lg) {
@@ -1293,6 +1302,16 @@ static int run_pool(htspdf_task *tasks, int count, const char *browser,
   int running = 0, next = 0, done = 0, okc = 0;
 
   while (done < count) {
+    if (htspdf_cancel) {
+      for (int k = 0; k < conc; k++) {
+        if (handles[k]) {
+          TerminateProcess(handles[k], 1);
+          WaitForSingleObject(handles[k], 2000);
+          CloseHandle(handles[k]); handles[k] = NULL;
+        }
+      }
+      break;
+    }
     while (running < conc && next < count) {
       int slot = -1;
       for (int k = 0; k < conc; k++) if (handles[k] == NULL) { slot = k; break; }
@@ -1381,6 +1400,16 @@ static int run_pool(htspdf_task *tasks, int count, const char *browser,
   int running = 0, next = 0, done = 0, okc = 0;
 
   while (done < count) {
+    if (htspdf_cancel) {
+      for (int k = 0; k < conc; k++) {
+        if (pids[k] != 0) {
+          kill(pids[k], SIGKILL);
+          waitpid(pids[k], NULL, 0);
+          pids[k] = 0;
+        }
+      }
+      break;
+    }
     while (running < conc && next < count) {
       int slot = -1;
       for (int k = 0; k < conc; k++) if (pids[k] == 0) { slot = k; break; }

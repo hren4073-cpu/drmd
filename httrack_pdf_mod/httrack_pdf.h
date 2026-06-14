@@ -80,6 +80,17 @@ char *htspdf_clean_html(const char *html, size_t len,
 int htspdf_extract_title(const char *html, size_t len,
                          char *title, size_t title_size);
 
+/* ── Settable by host application (GUI front-end) ───────────────────────── */
+/* Log callback: when non-NULL, all log lines are passed here instead of
+   stderr. Set before calling htspdf_export_dir(); clear afterward.
+   The callback is called from the worker thread – use PostMessage, not
+   direct UI calls. */
+extern void (*htspdf_log_cb)(const char *msg, void *ud);
+extern void *htspdf_log_ud;
+/* Set to non-zero to request cancellation of a running export.
+   htspdf_export_dir() checks this flag periodically and aborts early. */
+extern volatile int htspdf_cancel;
+
 /* -------- Post-processing pipeline (Chrome + merge) -------- */
 /* Walk `root`, convert every .html/.htm file to a .pdf next to the source,
    honoring cfg (concurrency, timeout, page size). Writes errors to
