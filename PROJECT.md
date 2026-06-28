@@ -25,8 +25,9 @@ android/                 ← версии для Android
 
 | Что | Как |
 |-----|-----|
+| **ПК, Windows, в один клик** | дабл-клик `pc/httrack_pdf_mod/autobuild.bat` — сам ставит портативный MinGW (если нужно), собирает GUI+CLI и запускает |
 | ПК, Linux CLI | `make -C pc/httrack_pdf_mod exe` → `httrack2pdf` |
-| ПК, Windows GUI | `pc/httrack_pdf_mod/build-win-gui.bat` (MinGW) → `httrack2pdf.exe` |
+| ПК, Windows GUI (вручную) | `pc/httrack_pdf_mod/build-win-gui.bat` (нужен MinGW) → `httrack2pdf.exe` |
 | Android `httrack-pdf` | открыть `android/httrack-pdf` в Android Studio → Build APK |
 | Android `lj2pdf` | открыть `android/lj2pdf` в Android Studio → Build APK |
 | Всё сразу | пуш в репозиторий → **GitHub Action** соберёт артефакты |

@@ -1,11 +1,21 @@
-httrack_pdf_test
-httrack_pdf_test.exe
+# Build outputs
 httrack2pdf
 httrack2pdf.exe
-*.so
-*.dll
+httrack2pdf-cli.exe
+httrack_pdf_test
+httrack_pdf_test.exe
+httrack_pdf.so
+httrack_pdf.dll
 *.o
 *.lo
+
+# Conversion outputs / logs
 *.pdf
 pdf_errors.log
-chromium/
+
+# autobuild.bat downloads
+mingw.zip
+/mingw64/
+
+# GUI runtime browser bootstrap
+/chromium/
