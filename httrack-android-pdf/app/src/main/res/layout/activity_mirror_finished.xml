@@ -1,0 +1,99 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="fill_parent"
+    android:layout_height="fill_parent"
+    android:orientation="vertical"
+    android:paddingBottom="@dimen/activity_vertical_margin"
+    android:paddingLeft="@dimen/activity_horizontal_margin"
+    android:paddingRight="@dimen/activity_horizontal_margin"
+    android:paddingTop="@dimen/activity_vertical_margin"
+    tools:context=".ProjNameActivity" >
+
+    <TextView
+        android:id="@+id/fieldDisplay"
+        android:layout_width="fill_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/welcome_message" />
+
+    <LinearLayout
+        android:layout_width="fill_parent"
+        android:layout_height="fill_parent"
+        android:gravity="bottom"
+        android:orientation="vertical" >
+
+        <View style="@style/DividerLineHorizontal" />
+
+        <LinearLayout
+            android:layout_width="fill_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" >
+
+            <LinearLayout
+                style="@style/BorderlessButtonLeft"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="0.3" >
+
+                <Button
+                    android:id="@+id/buttonLogs"
+                    style="@style/ButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:onClick="onShowLogs"
+                    android:text="@string/show_logs" />
+            </LinearLayout>
+
+            <View style="@style/DividerLineVertical" />
+
+            <LinearLayout
+                style="@style/BorderlessButtonRight"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="0.3" >
+
+                <Button
+                    android:id="@+id/buttonBrowse"
+                    style="@style/ButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:onClick="onBrowse"
+                    android:text="@string/browse_website" />
+            </LinearLayout>
+
+            <View style="@style/DividerLineVertical" />
+
+            <LinearLayout
+                style="@style/BorderlessButtonRight"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="0.3" >
+
+                <Button
+                    android:id="@+id/buttonMakePdf"
+                    style="@style/ButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:onClick="onMakePdf"
+                    android:text="@string/make_pdf_book" />
+            </LinearLayout>
+
+            <View style="@style/DividerLineVertical" />
+
+            <LinearLayout
+                style="@style/BorderlessButtonRight"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="0.3" >
+
+                <Button
+                    android:id="@+id/buttonNewProject"
+                    style="@style/ButtonStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:onClick="onNewProject"
+                    android:text="@string/title_activity_proj_name" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+</LinearLayout>

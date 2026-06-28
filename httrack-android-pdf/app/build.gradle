@@ -1,0 +1,44 @@
+apply plugin: 'com.android.application'
+
+android {
+    compileSdkVersion 33
+
+    defaultConfig {
+        applicationId "com.httrack.android"
+        minSdkVersion 21          // WebView.createPrintDocumentAdapter() needs 21
+        // Keep targetSdk where the original app worked: avoids scoped-storage
+        // changes that would break HTTrack's downloads to /sdcard/HTTrack.
+        targetSdkVersion 28
+        versionCode 64
+        versionName "3.49.02.64-pdf"
+        // We ship prebuilt .so (from the official APK) in jniLibs; ARMv7 only.
+        ndk {
+            abiFilters "armeabi-v7a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lintOptions {
+        abortOnError false
+    }
+
+    // Old project, no namespace attribute -> package comes from the manifest.
+}
+
+dependencies {
+    // Drop-in AndroidX replacement for the old support-v4 dependency.
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    // Pure-JVM PDFBox port: merge per-page PDFs + add an outline/TOC.
+    implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+}
