@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.LJtoPDF" parent="Theme.AppCompat.Light.DarkActionBar" />
+</resources>

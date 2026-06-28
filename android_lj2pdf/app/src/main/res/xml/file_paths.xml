@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- getExternalFilesDir(null) -> Android/data/<pkg>/files -->
+    <external-files-path name="books" path="." />
+</paths>
