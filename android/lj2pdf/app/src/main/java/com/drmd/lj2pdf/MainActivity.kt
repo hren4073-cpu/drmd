@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private lateinit var rowPager: View
     private lateinit var tilStep: TextInputLayout
     private lateinit var cbAll: CheckBox
+    private lateinit var cbArchive: CheckBox
     private lateinit var cbClean: CheckBox
     private lateinit var tilTo: TextInputLayout
     private lateinit var edtFrom: TextInputEditText
@@ -78,6 +79,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         rowPager = findViewById(R.id.rowPager)
         tilStep = findViewById(R.id.tilStep)
         cbAll = findViewById(R.id.cbAll)
+        cbArchive = findViewById(R.id.cbArchive)
         cbClean = findViewById(R.id.cbClean)
         tilTo = findViewById(R.id.tilTo)
         edtFrom = findViewById(R.id.edtFrom)
@@ -97,7 +99,6 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         updateOutLabel()
 
         rgMode.setOnCheckedChangeListener { _, _ -> applyMode() }
-        cbAll.setOnCheckedChangeListener { _, _ -> applyAllToggle() }
         applyMode()
 
         findViewById<MaterialButton>(R.id.btnChooseOut).setOnClickListener {
@@ -108,6 +109,10 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             ConvertBus.cancelRequested = true
             btnCancel.isEnabled = false
             txtStatus.text = "Cancelling…"
+            try {
+                startService(Intent(this, ConvertService::class.java)
+                    .setAction(ConvertService.ACTION_STOP))
+            } catch (_: Throwable) { /* service may have stopped */ }
         }
         btnOpen.setOnClickListener { openBook() }
     }
@@ -122,18 +127,22 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     private fun applyMode() {
         val m = mode()
-        cbAll.visibility = if (m == Mode.LJ) View.VISIBLE else View.GONE
+        val lj = m == Mode.LJ
+        cbAll.visibility = if (lj) View.VISIBLE else View.GONE
+        cbArchive.visibility = if (lj) View.VISIBLE else View.GONE
         when (m) {
             Mode.LJ -> {
                 rowPager.visibility = View.VISIBLE
                 tilStep.visibility = View.VISIBLE
+                tilTo.visibility = View.GONE        // LJ uses scan/auto, not To
                 tilUrl.hint = "Blog URL"
-                txtHint.text =
-                    "Whole blog: keep the box checked — it walks ?skip= to the last page."
+                txtHint.text = "Scan the blog, then choose how many to save — or " +
+                    "tick «automatically» to grab it all. From = start page."
             }
             Mode.TEMPLATE -> {
                 rowPager.visibility = View.VISIBLE
                 tilStep.visibility = View.GONE
+                tilTo.visibility = View.VISIBLE
                 tilUrl.hint = "URL template with {n}"
                 txtHint.text = "Use {n} for the page number, e.g. https://site/blog/page/{n}"
             }
@@ -144,13 +153,6 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 txtHint.text = "A single page → one PDF."
             }
         }
-        applyAllToggle()
-    }
-
-    /** In LJ "whole blog" mode the To field is irrelevant. */
-    private fun applyAllToggle() {
-        val auto = mode() == Mode.LJ && cbAll.isChecked
-        tilTo.visibility = if (auto) View.GONE else View.VISIBLE
     }
 
     private fun startConversion() {
@@ -171,44 +173,36 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
 
-        if (mode() == Mode.LJ && cbAll.isChecked) {
-            // Whole blog: walk ?skip= from `from` to the last page automatically.
-            intent.putExtra(ConvertService.EXTRA_MODE, "lj_auto")
-            intent.putExtra(ConvertService.EXTRA_BASE, raw.trimEnd('/'))
-            intent.putExtra(ConvertService.EXTRA_STEP, step)
-            intent.putExtra(ConvertService.EXTRA_FROM, from)
-        } else {
-            val urls = ArrayList<String>()
-            val titles = ArrayList<String>()
-            when (mode()) {
-                Mode.LJ -> {
-                    val base = raw.trimEnd('/')
-                    var to = edtTo.text?.toString()?.toIntOrNull() ?: from
-                    if (to < from) to = from
-                    for (k in from..to) {
-                        val skip = (k - 1) * step
-                        urls.add(if (skip == 0) "$base/" else "$base/?skip=$skip")
-                        titles.add("Страница $k")
-                    }
-                }
-                Mode.TEMPLATE -> {
-                    if (!raw.contains("{n}")) { toast("Template must contain {n}"); return }
-                    var to = edtTo.text?.toString()?.toIntOrNull() ?: from
-                    if (to < from) to = from
-                    for (k in from..to) {
-                        urls.add(raw.replace("{n}", k.toString()))
-                        titles.add("Страница $k")
-                    }
-                }
-                Mode.SINGLE -> {
-                    urls.add(raw)
-                    titles.add(Uri.parse(raw).host ?: "Page")
-                }
+        when (mode()) {
+            Mode.LJ -> {
+                intent.putExtra(
+                    ConvertService.EXTRA_MODE,
+                    if (cbArchive.isChecked) "lj_archive" else "lj_pages"
+                )
+                intent.putExtra(ConvertService.EXTRA_AUTO, cbAll.isChecked)
+                intent.putExtra(ConvertService.EXTRA_BASE, raw.trimEnd('/'))
+                intent.putExtra(ConvertService.EXTRA_STEP, step)
+                intent.putExtra(ConvertService.EXTRA_FROM, from)
+                intent.putExtra(ConvertService.EXTRA_MAX, 2000)
             }
-            if (urls.isEmpty()) { toast("Nothing to convert."); return }
-            intent.putExtra(ConvertService.EXTRA_MODE, "list")
-            intent.putStringArrayListExtra(ConvertService.EXTRA_URLS, urls)
-            intent.putStringArrayListExtra(ConvertService.EXTRA_TITLES, titles)
+            Mode.TEMPLATE -> {
+                if (!raw.contains("{n}")) { toast("Template must contain {n}"); return }
+                var to = edtTo.text?.toString()?.toIntOrNull() ?: from
+                if (to < from) to = from
+                val urls = ArrayList<String>()
+                val titles = ArrayList<String>()
+                for (k in from..to) { urls.add(raw.replace("{n}", k.toString())); titles.add("Страница $k") }
+                intent.putExtra(ConvertService.EXTRA_MODE, "list")
+                intent.putStringArrayListExtra(ConvertService.EXTRA_URLS, urls)
+                intent.putStringArrayListExtra(ConvertService.EXTRA_TITLES, titles)
+            }
+            Mode.SINGLE -> {
+                intent.putExtra(ConvertService.EXTRA_MODE, "list")
+                intent.putStringArrayListExtra(ConvertService.EXTRA_URLS, arrayListOf(raw))
+                intent.putStringArrayListExtra(
+                    ConvertService.EXTRA_TITLES, arrayListOf(Uri.parse(raw).host ?: "Page")
+                )
+            }
         }
 
         // Ask for the notification permission (Android 13+) so progress shows.
@@ -223,6 +217,70 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         txtStatus.text = "Starting…"
         setBusy(true)
         ContextCompat.startForegroundService(this, intent)
+    }
+
+    /** Tell the running service how many scanned items to download. */
+    private fun sendSelect(count: Int) {
+        try {
+            startService(
+                Intent(this, ConvertService::class.java)
+                    .setAction(ConvertService.ACTION_SELECT)
+                    .putExtra(ConvertService.EXTRA_SELECT_COUNT, count)
+            )
+            txtStatus.text = "Downloading $count…"
+        } catch (_: Throwable) { /* ignore */ }
+    }
+
+    /** After a scan, let the user pick how much of the blog to save. */
+    private fun showSelectionDialog(total: Int) {
+        if (total <= 0) return
+        val half = (total + 1) / 2
+        val third = (total + 2) / 3
+        val options = arrayOf(
+            "All ($total)",
+            "Half (~$half)",
+            "A third (~$third)",
+            "Custom…"
+        )
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Found $total — how many (freshest first)?")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> sendSelect(total)
+                    1 -> sendSelect(half)
+                    2 -> sendSelect(third)
+                    3 -> askCustomCount(total)
+                }
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                ConvertBus.cancelRequested = true
+                sendStop()
+            }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun askCustomCount(total: Int) {
+        val input = android.widget.EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(total.toString())
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("How many (1..$total)?")
+            .setView(input)
+            .setPositiveButton("OK") { _, _ ->
+                val n = input.text.toString().toIntOrNull()?.coerceIn(1, total) ?: total
+                sendSelect(n)
+            }
+            .setNegativeButton("Cancel") { _, _ -> ConvertBus.cancelRequested = true; sendStop() }
+            .show()
+    }
+
+    private fun sendStop() {
+        try {
+            startService(Intent(this, ConvertService::class.java)
+                .setAction(ConvertService.ACTION_STOP))
+        } catch (_: Throwable) { /* ignore */ }
     }
 
     private fun updateOutLabel() {
@@ -280,11 +338,24 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             progress.progress = ConvertBus.done
         }
         btnOpen.isEnabled = ConvertBus.lastBook?.exists() == true
+        // If the service is parked waiting for a choice, re-show the picker.
+        if (ConvertBus.awaitingSelection) showSelectionDialog(ConvertBus.scanTotal)
     }
 
     override fun onPause() {
         ConvertBus.observer = null
         super.onPause()
+    }
+
+    override fun onScanProgress(pagesScanned: Int, itemsFound: Int) {
+        progress.isIndeterminate = true
+        txtStatus.text = "Scanning… page $pagesScanned, $itemsFound found"
+    }
+
+    override fun onScanReady(total: Int) {
+        progress.isIndeterminate = true
+        txtStatus.text = "Scanned $total — choose how many"
+        showSelectionDialog(total)
     }
 
     override fun onProgress(done: Int, total: Int, status: String) {

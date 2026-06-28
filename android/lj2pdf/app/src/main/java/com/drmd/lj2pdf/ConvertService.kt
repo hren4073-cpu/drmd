@@ -10,11 +10,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.webkit.WebView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,36 +27,42 @@ import java.io.File
 import java.io.FileInputStream
 
 /**
- * Foreground service that converts a blog into a single book.pdf in the
- * background, with a progress notification.
+ * Foreground service that archives a blog into one book.pdf in the background.
  *
- * Two job modes:
- *  - "list"    : a fixed list of URLs (template / single-page modes).
- *  - "lj_auto" : a LiveJournal blog walked from the first page to the LAST one
- *                automatically (?skip=0,step,2*step,…) until a page has no
- *                entries — no need to know the page count up front.
+ * Flow (torrent-grabber style — start it and collect the PDF later):
+ *   1) SCAN  — walk ?skip=0,step,… from the first page, enumerate the blog
+ *              structure (post permalinks, or list pages).
+ *   2) CHOOSE — if not fully automatic, report the count and wait for the user
+ *              to pick how many (e.g. the freshest 1/3); otherwise take all.
+ *   3) DOWNLOAD — render each selected page to PDF (ads stripped, media kept),
+ *              then merge into book.pdf with a bookmark TOC.
  *
- * Pages are cleaned of ads/promo before rendering when [EXTRA_CLEAN] is set.
+ * A partial wake lock keeps it running with the screen off (overnight).
  */
 class ConvertService : Service() {
 
     companion object {
-        const val EXTRA_MODE = "mode"      // "list" | "lj_auto"
+        const val EXTRA_MODE = "mode"          // "lj_archive" | "lj_pages" | "list"
+        const val EXTRA_AUTO = "auto"          // true = take everything, no prompt
         const val EXTRA_URLS = "urls"
         const val EXTRA_TITLES = "titles"
-        const val EXTRA_BASE = "base"      // lj_auto: blog base url
-        const val EXTRA_STEP = "step"      // lj_auto: entries per page
-        const val EXTRA_FROM = "from"      // lj_auto: start page (1-based)
-        const val EXTRA_MAX = "max"        // lj_auto: hard page cap
+        const val EXTRA_BASE = "base"
+        const val EXTRA_STEP = "step"
+        const val EXTRA_FROM = "from"
+        const val EXTRA_MAX = "max"
         const val EXTRA_CLEAN = "clean"
         const val EXTRA_NAME = "name"
         const val EXTRA_TREE = "tree"
+        const val EXTRA_SELECT_COUNT = "selectCount"
         const val ACTION_STOP = "com.drmd.lj2pdf.STOP"
+        const val ACTION_SELECT = "com.drmd.lj2pdf.SELECT"
 
         private const val CHANNEL = "convert"
         private const val NID = 0x10
-        private const val SETTLE_MS = 1500L
-        private const val PAGE_TIMEOUT_MS = 60_000L
+        private const val SETTLE_LIST_MS = 1500L
+        private const val SETTLE_POST_MS = 2500L   // post pages carry more media
+        private const val SCAN_SETTLE_MS = 1200L
+        private const val PAGE_TIMEOUT_MS = 90_000L
         private const val DEFAULT_MAX = 2000
     }
 
@@ -62,6 +70,8 @@ class ConvertService : Service() {
     private lateinit var nm: NotificationManager
     private var web: WebView? = null
     private var running = false
+    private var wakeLock: PowerManager.WakeLock? = null
+    @Volatile private var selection: CompletableDeferred<Int>? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -71,118 +81,126 @@ class ConvertService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            ConvertBus.cancelRequested = true
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                ConvertBus.cancelRequested = true
+                selection?.complete(0)
+                return START_NOT_STICKY
+            }
+            ACTION_SELECT -> {
+                selection?.complete(intent.getIntExtra(EXTRA_SELECT_COUNT, 0))
+                return START_NOT_STICKY
+            }
         }
         if (running) return START_NOT_STICKY
         if (intent == null) { stopSelf(); return START_NOT_STICKY }
 
         val mode = intent.getStringExtra(EXTRA_MODE) ?: "list"
+        val auto = intent.getBooleanExtra(EXTRA_AUTO, true)
         val clean = intent.getBooleanExtra(EXTRA_CLEAN, true)
         val name = intent.getStringExtra(EXTRA_NAME) ?: "book"
         val tree = intent.getStringExtra(EXTRA_TREE)
 
         running = true
+        acquireWakeLock()
         ConvertBus.start(0)
         startForeground(NID, progressNotif("Starting…", 0, 0, true))
         web = WebView(this)
 
         scope.launch {
-            val workDir = File(cacheDir, "work").apply { mkdirs() }
-            workDir.listFiles()?.forEach { it.delete() }
-            val renderer = WebViewPdfRenderer(web!!) { line -> ConvertBus.log(line) }
-            val pageFiles = ArrayList<File>()
-            val titles = ArrayList<String>()
-
-            if (mode == "lj_auto") {
-                val base = (intent.getStringExtra(EXTRA_BASE) ?: "").trimEnd('/')
-                val step = intent.getIntExtra(EXTRA_STEP, 20).coerceAtLeast(1)
-                val from = intent.getIntExtra(EXTRA_FROM, 1).coerceAtLeast(1)
-                val max = intent.getIntExtra(EXTRA_MAX, DEFAULT_MAX)
-                walkBlog(renderer, base, step, from, max, clean, workDir, pageFiles, titles)
-            } else {
-                val urls = intent.getStringArrayListExtra(EXTRA_URLS) ?: arrayListOf()
-                val ts = intent.getStringArrayListExtra(EXTRA_TITLES) ?: arrayListOf()
-                convertList(renderer, urls, ts, clean, workDir, pageFiles, titles)
+            try {
+                runJob(intent, mode, auto, clean, name, tree)
+            } catch (t: Throwable) {
+                ConvertBus.log("[error] ${t.message}")
+                finish(false, null)
             }
-
-            mergeAndFinish(pageFiles, titles, name, tree, workDir)
         }
         return START_NOT_STICKY
     }
 
-    /** Walk a LiveJournal blog from the first page to the last automatically. */
-    private suspend fun walkBlog(
-        renderer: WebViewPdfRenderer, base: String, step: Int, from: Int, max: Int,
-        clean: Boolean, workDir: File, pageFiles: ArrayList<File>, titles: ArrayList<String>
+    private suspend fun runJob(
+        intent: Intent, mode: String, auto: Boolean, clean: Boolean,
+        name: String, tree: String?
     ) {
-        var page = from
-        var prevSig = ""
-        while (!ConvertBus.cancelRequested && page <= max) {
-            val skip = (page - 1) * step
-            val url = if (skip == 0) "$base/" else "$base/?skip=$skip"
-            val status = "Page $page… (${pageFiles.size} saved)"
-            ConvertBus.progress(pageFiles.size, pageFiles.size + 1, status)
-            nm.notify(NID, progressNotif(status, 0, 0, true))
-            ConvertBus.log("[page $page] $url")
+        val workDir = File(cacheDir, "work").apply { mkdirs() }
+        workDir.listFiles()?.forEach { it.delete() }
+        val renderer = WebViewPdfRenderer(web!!) { line -> ConvertBus.log(line) }
 
-            val f = File(workDir, "page_%04d.pdf".format(page))
-            val res = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
-                renderer.render(url, f, SETTLE_MS, clean, requireEntries = true)
+        // 1) Build the work list (scan for LJ modes, or take the given list).
+        val isArchive = mode == "lj_archive"
+        val urls = ArrayList<String>()
+        val titles = ArrayList<String>()
+        when (mode) {
+            "lj_archive", "lj_pages" -> {
+                val base = (intent.getStringExtra(EXTRA_BASE) ?: "").trimEnd('/')
+                val step = intent.getIntExtra(EXTRA_STEP, 20).coerceAtLeast(1)
+                val from = intent.getIntExtra(EXTRA_FROM, 1).coerceAtLeast(1)
+                val max = intent.getIntExtra(EXTRA_MAX, DEFAULT_MAX)
+                scanBlog(renderer, base, step, from, max, isArchive, urls, titles)
             }
-            if (res == null) { ConvertBus.log("  timeout, stopping"); break }
-            if (res.count == 0) { ConvertBus.log("  no entries — reached the last page"); break }
-            if (res.signature.isNotEmpty() && res.signature == prevSig) {
-                ConvertBus.log("  same entries as previous page — stopping"); break
+            else -> {
+                urls.addAll(intent.getStringArrayListExtra(EXTRA_URLS) ?: arrayListOf())
+                titles.addAll(intent.getStringArrayListExtra(EXTRA_TITLES) ?: arrayListOf())
             }
-            prevSig = res.signature
-            if (res.ok && f.length() > 0) {
-                pageFiles.add(f); titles.add("Страница $page")
-                ConvertBus.log("  ok — ${res.count} entries (${f.length() / 1024} KB)")
-            } else {
-                ConvertBus.log("  render failed, skipped")
-            }
-            page++
         }
-        if (page > max) ConvertBus.log("[info] reached the page cap ($max)")
-    }
 
-    private suspend fun convertList(
-        renderer: WebViewPdfRenderer, urls: List<String>, srcTitles: List<String>,
-        clean: Boolean, workDir: File, pageFiles: ArrayList<File>, titles: ArrayList<String>
-    ) {
-        for ((i, url) in urls.withIndex()) {
+        if (ConvertBus.cancelRequested) { finish(false, null); workDir.deleteRecursively(); return }
+        if (urls.isEmpty()) {
+            ConvertBus.log("[done] nothing found to download")
+            finish(false, null); workDir.deleteRecursively(); return
+        }
+
+        // 2) Decide how many to download.
+        var count = urls.size
+        if (!auto && (mode == "lj_archive" || mode == "lj_pages")) {
+            ConvertBus.log("[scan] found $count ${if (isArchive) "post(s)" else "page(s)"} — waiting for your choice")
+            nm.notify(NID, progressNotif("Scanned $count — choose how many in the app", 0, 0, true))
+            val def = CompletableDeferred<Int>()
+            selection = def
+            ConvertBus.scanReady(count)
+            count = def.await().coerceIn(0, urls.size)
+            selection = null
+            if (count == 0 || ConvertBus.cancelRequested) {
+                ConvertBus.log("[done] cancelled / nothing selected")
+                finish(false, null); workDir.deleteRecursively(); return
+            }
+            ConvertBus.log("[scan] downloading the freshest $count")
+        }
+
+        // 3) Download the selected items.
+        val pageFiles = ArrayList<File>()
+        val outTitles = ArrayList<String>()
+        val settle = if (isArchive) SETTLE_POST_MS else SETTLE_LIST_MS
+        for (i in 0 until count) {
             if (ConvertBus.cancelRequested) { ConvertBus.log("[info] cancelled"); break }
-            val status = "Converting ${i + 1}/${urls.size}"
-            ConvertBus.progress(i, urls.size, status)
-            nm.notify(NID, progressNotif(status, i, urls.size, false))
-            ConvertBus.log("[${i + 1}] $url")
+            val url = urls[i]
+            val status = "Saving ${i + 1}/$count"
+            ConvertBus.progress(i, count, status)
+            nm.notify(NID, progressNotif(status, i, count, false))
+            ConvertBus.log("[${i + 1}/$count] $url")
+
             val f = File(workDir, "page_%04d.pdf".format(i + 1))
-            val ok = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
-                renderer.renderUrlToPdf(url, f, SETTLE_MS, clean)
-            } ?: false
-            if (ok && f.length() > 0) {
-                pageFiles.add(f); titles.add(srcTitles.getOrElse(i) { "Page ${i + 1}" })
+            val res = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                renderer.render(url, f, settle, clean, requireEntries = false)
+            }
+            if (res != null && res.ok && f.length() > 0) {
+                pageFiles.add(f)
+                val t = res.title.ifBlank { titles.getOrElse(i) { "Item ${i + 1}" } }
+                outTitles.add(t)
                 ConvertBus.log("  ok (${f.length() / 1024} KB)")
             } else {
                 ConvertBus.log("  FAILED (skipped)")
             }
         }
-    }
 
-    private suspend fun mergeAndFinish(
-        pageFiles: ArrayList<File>, titles: ArrayList<String>,
-        name: String, tree: String?, workDir: File
-    ) {
+        // 4) Merge + export.
         if (pageFiles.isEmpty()) { finish(false, null); workDir.deleteRecursively(); return }
-
-        ConvertBus.progress(pageFiles.size, pageFiles.size, "Merging ${pageFiles.size} page(s)…")
+        ConvertBus.progress(count, count, "Merging ${pageFiles.size} page(s)…")
         nm.notify(NID, progressNotif("Merging ${pageFiles.size} page(s)…", 0, 0, true))
         val book = File(getExternalFilesDir(null), "$name.pdf")
         val ok = withContext(Dispatchers.IO) {
             try {
-                BookBuilder.mergeWithToc(pageFiles, titles, book)
+                BookBuilder.mergeWithToc(pageFiles, outTitles, book)
             } catch (t: Throwable) {
                 ConvertBus.log("[merge] error: ${t.message}"); false
             }
@@ -192,9 +210,44 @@ class ConvertService : Service() {
         finish(ok, if (ok) book else null)
     }
 
+    /** Walk ?skip= from the first page, enumerating posts (archive) or pages. */
+    private suspend fun scanBlog(
+        renderer: WebViewPdfRenderer, base: String, step: Int, from: Int, max: Int,
+        archive: Boolean, urls: ArrayList<String>, titles: ArrayList<String>
+    ) {
+        ConvertBus.log("[scan] scanning blog structure…")
+        val seen = HashSet<String>()
+        var page = from
+        var pageNo = 0
+        while (!ConvertBus.cancelRequested && page <= max) {
+            val skip = (page - 1) * step
+            val url = if (skip == 0) "$base/" else "$base/?skip=$skip"
+            nm.notify(NID, progressNotif("Scanning page $page… (${urls.size} found)", 0, 0, true))
+            val links = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                renderer.collectPostLinks(url, SCAN_SETTLE_MS)
+            } ?: emptyList()
+            if (links.isEmpty()) { ConvertBus.log("[scan] page $page empty — end of blog"); break }
+
+            val fresh = links.filter { seen.add(it) }
+            if (fresh.isEmpty()) { ConvertBus.log("[scan] page $page repeats — stopping"); break }
+
+            if (archive) {
+                for (l in fresh) { urls.add(l); titles.add("") }   // title filled at render
+            } else {
+                pageNo++
+                urls.add(url); titles.add("Страница $page")
+            }
+            ConvertBus.scanProgress(page, urls.size)
+            ConvertBus.log("[scan] page $page: +${fresh.size} (total ${urls.size})")
+            page++
+        }
+        if (page > max) ConvertBus.log("[scan] hit the page cap ($max)")
+    }
+
     private fun finish(ok: Boolean, book: File?) {
         running = false
         web?.destroy(); web = null
+        releaseWakeLock()
         stopForeground(true)
         nm.notify(NID + 1, if (ok && book != null) doneNotif(book) else failedNotif())
         ConvertBus.finished(ok, book)
@@ -215,6 +268,21 @@ class ConvertService : Service() {
         }
     }
 
+    private fun acquireWakeLock() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lj2pdf:convert").apply {
+                setReferenceCounted(false)
+                acquire(6 * 60 * 60 * 1000L)   // up to 6h safety timeout
+            }
+        } catch (_: Throwable) { /* best effort */ }
+    }
+
+    private fun releaseWakeLock() {
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Throwable) {}
+        wakeLock = null
+    }
+
     // -- notifications -----------------------------------------------------
 
     private fun createChannel() {
@@ -230,7 +298,7 @@ class ConvertService : Service() {
     ): Notification {
         val b = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("Building PDF book")
+            .setContentTitle("Archiving blog → PDF")
             .setContentText(status)
             .setOnlyAlertOnce(true)
             .setOngoing(true)
@@ -250,8 +318,8 @@ class ConvertService : Service() {
     private fun failedNotif(): Notification =
         NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_error)
-            .setContentTitle("PDF book failed")
-            .setContentText("No pages were converted.")
+            .setContentTitle("Archiving failed / cancelled")
+            .setContentText("No pages were saved.")
             .setAutoCancel(true)
             .build()
 
@@ -271,6 +339,7 @@ class ConvertService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        releaseWakeLock()
         web?.destroy(); web = null
         super.onDestroy()
     }

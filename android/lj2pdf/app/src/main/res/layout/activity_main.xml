@@ -136,11 +136,18 @@
             android:text="" />
 
         <CheckBox
-            android:id="@+id/cbAll"
+            android:id="@+id/cbArchive"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:checked="true"
-            android:text="Whole blog — first page to the last (auto)" />
+            android:text="Full posts (with comments &amp; media)" />
+
+        <CheckBox
+            android:id="@+id/cbAll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="false"
+            android:text="Download everything automatically (no prompt)" />
 
         <CheckBox
             android:id="@+id/cbClean"
