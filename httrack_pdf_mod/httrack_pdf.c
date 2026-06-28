@@ -1039,9 +1039,10 @@ static void log_close(htspdf_log *lg) {
 /* ============================================================ */
 
 typedef struct {
-  char *html;                   /* source html (absolute)         */
+  char *html;                   /* source html (absolute) OR live URL */
   char *pdf;                    /* destination pdf (absolute)     */
   char  title[512];             /* for the merge bookmark TOC     */
+  int   is_url;                 /* 1: `html` is an http(s) URL, print live */
   int   status;                 /* 0=pending 1=ok 2=fail 3=timeout */
 } htspdf_task;
 
@@ -1239,7 +1240,8 @@ static int is_headless_shell(const char *browser) {
 static char **build_argv(const char *browser, const htspdf_task *t,
                          const htspdf_config *cfg, int slot,
                          const char *root) {
-  char *url = file_url(t->html);
+  /* live URL -> print straight from the network; else a local file:// URL */
+  char *url = t->is_url ? strdup(t->html) : file_url(t->html);
   char *p_pdf = (char *) malloc(strlen(t->pdf) + 32);
   sprintf(p_pdf, "--print-to-pdf=%s", t->pdf);
   char *profile = (char *) malloc(strlen(root) + 64);
@@ -1639,6 +1641,157 @@ int htspdf_export_dir(const char *root, const htspdf_config *cfg) {
   free(tasks);
   sl_free(&files);
   log_close(&lg);
+  return ok;
+}
+
+/* ============================================================ */
+/*  Public: build a book from an explicit list of URLs           */
+/* ============================================================ */
+
+/* Create a single directory (no-op if it already exists). */
+static int make_dir(const char *path) {
+#ifdef _WIN32
+  if (_mkdir(path) == 0) return 1;
+#else
+  if (mkdir(path, 0755) == 0) return 1;
+#endif
+  return errno == EEXIST;
+}
+
+/* Convert an explicit list of (live http or file) URLs to per-page PDFs in
+   `workdir`, then optionally merge them into a single book with a TOC.
+   titles[] may be NULL (chapters fall back to "Page N"). */
+int htspdf_export_url_list(const char *workdir, const char *const *urls,
+                           const char *const *titles, int n,
+                           const htspdf_config *cfg) {
+  if (n <= 0 || workdir == NULL || *workdir == '\0')
+    return 0;
+  make_dir(workdir);
+
+  htspdf_log lg;
+  log_open(&lg, workdir);
+
+  char browser[1024];
+  if (!ensure_browser(cfg, &lg, browser, sizeof(browser))) {
+    log_close(&lg);
+    return 0;
+  }
+  log_msg(&lg, "[info] browser: %s", browser);
+  log_msg(&lg, "[info] %d page(s) to fetch & convert into %s", n, workdir);
+
+  htspdf_task *tasks = (htspdf_task *) calloc(n, sizeof(htspdf_task));
+  int count = 0;
+  for (int i = 0; i < n; i++) {
+    if (!urls[i] || !*urls[i])
+      continue;
+    char pdf[8192];
+    snprintf(pdf, sizeof(pdf), "%s%cpage_%04d.pdf",
+             workdir, HTSPDF_PATHSEP, i + 1);
+    tasks[count].html   = strdup(urls[i]);
+    tasks[count].pdf    = strdup(pdf);
+    tasks[count].is_url = (strncmp(urls[i], "http://", 7) == 0 ||
+                           strncmp(urls[i], "https://", 8) == 0);
+    if (titles && titles[i] && titles[i][0])
+      strncpy(tasks[count].title, titles[i], sizeof(tasks[count].title) - 1);
+    else
+      snprintf(tasks[count].title, sizeof(tasks[count].title),
+               "Page %d", i + 1);
+    count++;
+  }
+
+  time_t t0 = time(NULL);
+  int ok = run_pool(tasks, count, browser, cfg, workdir, &lg);
+  time_t t1 = time(NULL);
+  log_msg(&lg, "[info] converted %d/%d page(s) in %lds (%d error/timeout)",
+          ok, count, (long) (t1 - t0), lg.errors);
+
+  if (cfg->do_merge && ok > 0)
+    merge_pdfs(tasks, count, cfg, workdir, &lg);
+
+  for (int i = 0; i < count; i++) { free(tasks[i].html); free(tasks[i].pdf); }
+  free(tasks);
+  log_close(&lg);
+  return ok;
+}
+
+/* Pull the host name out of a URL and sanitize it for use as a folder name. */
+static void url_host(const char *url, char *out, size_t cap) {
+  const char *p = strstr(url, "://");
+  p = p ? p + 3 : url;
+  size_t i = 0;
+  for (; p[i] && p[i] != '/' && p[i] != ':' && i + 1 < cap; i++)
+    out[i] = p[i];
+  out[i] = '\0';
+  for (size_t j = 0; out[j]; j++) {
+    unsigned char c = (unsigned char) out[j];
+    if (!isalnum(c) && c != '.' && c != '-')
+      out[j] = '_';
+  }
+  if (out[0] == '\0')
+    strncpy(out, "blog", cap - 1);
+}
+
+/* LiveJournal: walk the journal's pagination from page `page_from` to
+   `page_to` (1-based). Page k maps to BASE/?skip=(k-1)*step, which is how
+   LiveJournal pages its entry list. Each page is rendered to PDF by a
+   headless browser and the lot is merged into a book with a bookmark TOC.
+   `workdir` may be "" to auto-pick a folder named after the blog next to
+   the executable. Returns the number of pages successfully converted. */
+int htspdf_lj_book(const char *base_url, int page_from, int page_to,
+                   int step, const char *workdir, const htspdf_config *cfg) {
+  if (base_url == NULL || *base_url == '\0')
+    return 0;
+  if (page_from < 1) page_from = 1;
+  if (page_to < page_from) page_to = page_from;
+  if (step < 1) step = 20;             /* LiveJournal default entries/page */
+
+  /* normalize: drop trailing slashes so "base/?skip=" is well-formed */
+  char base[2048];
+  strncpy(base, base_url, sizeof(base) - 1);
+  base[sizeof(base) - 1] = '\0';
+  size_t bl = strlen(base);
+  while (bl > 0 && (base[bl - 1] == '/' || base[bl - 1] == ' '))
+    base[--bl] = '\0';
+
+  /* decide where to write */
+  char dir[4096];
+  if (workdir && *workdir) {
+    strncpy(dir, workdir, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+  } else {
+    char exedir[4096], host[256];
+    if (!get_exe_dir(exedir, sizeof(exedir)))
+      strcpy(exedir, ".");
+    url_host(base, host, sizeof(host));
+    snprintf(dir, sizeof(dir), "%s%c%s_book", exedir, HTSPDF_PATHSEP, host);
+  }
+
+  int n = page_to - page_from + 1;
+  char **urls   = (char **) calloc(n, sizeof(char *));
+  char **titles = (char **) calloc(n, sizeof(char *));
+  for (int i = 0; i < n; i++) {
+    int page = page_from + i;
+    int skip = (page - 1) * step;
+    char u[2304], t[64];
+    if (skip == 0)
+      snprintf(u, sizeof(u), "%s/", base);
+    else
+      snprintf(u, sizeof(u), "%s/?skip=%d", base, skip);
+    snprintf(t, sizeof(t), "Страница %d", page);
+    urls[i]   = strdup(u);
+    titles[i] = strdup(t);
+  }
+
+  /* a LiveJournal book is the merge of all pages by definition */
+  htspdf_config bookcfg = *cfg;
+  bookcfg.do_merge = 1;
+
+  int ok = htspdf_export_url_list(dir, (const char *const *) urls,
+                                  (const char *const *) titles, n, &bookcfg);
+
+  for (int i = 0; i < n; i++) { free(urls[i]); free(titles[i]); }
+  free(urls);
+  free(titles);
   return ok;
 }
 

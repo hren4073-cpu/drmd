@@ -97,6 +97,21 @@ extern volatile int htspdf_cancel;
    <root>/pdf_errors.log. Returns number of files successfully converted. */
 int htspdf_export_dir(const char *root, const htspdf_config *cfg);
 
+/* Convert an explicit list of URLs (live http(s) or local file paths) to
+   per-page PDFs inside `workdir`, then (if cfg->do_merge) merge them into a
+   single book with a bookmark TOC. titles[] may be NULL. Returns the number
+   of pages successfully converted. */
+int htspdf_export_url_list(const char *workdir, const char *const *urls,
+                           const char *const *titles, int n,
+                           const htspdf_config *cfg);
+
+/* LiveJournal one-shot: download pages base/?skip=(page-1)*step for page in
+   [page_from..page_to], render each to PDF and merge into a book with a
+   bookmark TOC. `step` is entries-per-page (0 -> 20). `workdir` may be ""
+   to auto-pick "<exe_dir>/<host>_book". Returns pages converted. */
+int htspdf_lj_book(const char *base_url, int page_from, int page_to,
+                   int step, const char *workdir, const htspdf_config *cfg);
+
 /* -------- HTTrack glue (omitted in standalone builds) -------- */
 #ifndef HTSPDF_STANDALONE
 /* Chain the cleaning + end-of-mirror callbacks onto `opt`.
