@@ -1,0 +1,89 @@
+name: build
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - 'pc/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'pc/**'
+  workflow_dispatch:
+
+jobs:
+  # ---- Android apps (debug APKs) ----------------------------------------
+  android:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lj2pdf
+            dir: android/lj2pdf
+          - name: httrack-pdf
+            dir: android/httrack-pdf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build debug APK
+        working-directory: ${{ matrix.dir }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-debug-apk
+          path: ${{ matrix.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  # ---- PC: Linux CLI ----------------------------------------------------
+  pc-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc make
+      - name: Build httrack2pdf (Linux CLI)
+        working-directory: pc/httrack_pdf_mod
+        run: make exe
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: httrack2pdf-linux
+          path: pc/httrack_pdf_mod/httrack2pdf
+          if-no-files-found: error
+
+  # ---- PC: Windows GUI .exe (cross-compiled with MinGW) -----------------
+  pc-windows-gui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - name: Cross-compile httrack2pdf.exe (GUI)
+        working-directory: pc/httrack_pdf_mod
+        run: |
+          x86_64-w64-mingw32-gcc -O2 -std=gnu99 -Wall \
+            -DHTSPDF_STANDALONE -DHTSPDF_GUI \
+            -static -static-libgcc -s -mwindows \
+            -o httrack2pdf.exe \
+            httrack_pdf_gui.c httrack_pdf.c \
+            -lcomdlg32 -lshell32 -lole32 -lcomctl32
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: httrack2pdf-windows-gui
+          path: pc/httrack_pdf_mod/httrack2pdf.exe
+          if-no-files-found: error

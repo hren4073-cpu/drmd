@@ -13,6 +13,9 @@
     <!-- We need to connect to the Internet. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- PDF book conversion runs as a foreground service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
     <!-- We need to check the Internet connection (IPv6 enabled ?). -->
     <!-- NetworkInterface.getNetworkInterfaces() does not need that apparently, so let's remove the permission. -->
     <!-- uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" -->
@@ -89,10 +92,9 @@
             android:name="com.httrack.android.FileChooserActivity"
             android:label="@string/title_activity_file_chooser" >
         </activity>
-        <activity
-            android:name="com.httrack.android.PdfExportActivity"
-            android:label="@string/make_pdf_book" >
-        </activity>
+        <service
+            android:name="com.httrack.android.PdfExportService"
+            android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -14,12 +14,12 @@ LiveJournal и т.д.). Новый код отвечает только за к�
 
 | Файл | Изменение |
 |------|-----------|
-| `app/src/main/java/.../PdfExportActivity.java` | **новый** — рендер каждой HTML-страницы зеркала в PDF (системный `WebView` + `PrintDocumentAdapter`) и склейка |
+| `app/src/main/java/.../PdfExportService.java` | **новый** — **фоновый** foreground-сервис: гонит конвейер и показывает прогресс в уведомлении; по готовности уведомление открывает книгу |
+| `app/src/main/java/.../PdfBookEngine.java` | **новый** — сам конвейер (рендер каждой HTML-страницы в PDF через `WebView` + `PrintDocumentAdapter`), без привязки к UI |
 | `app/src/main/java/.../BookBuilder.java` | **новый** — слияние PDF + оглавление/закладки через PDFBox-Android (кириллица ок) |
-| `app/src/main/res/layout/activity_pdf_export.xml` | **новый** — экран прогресса конвертации |
-| `HTTrackActivity.java` | + метод `onMakePdf()`; импорты `android.support.v4.*` → `androidx.*` |
+| `HTTrackActivity.java` | + метод `onMakePdf()` (запускает сервис); импорты `android.support.v4.*` → `androidx.*` |
 | `activity_mirror_finished.xml` | + кнопка «PDF book» на экране завершения |
-| `AndroidManifest.xml` | регистрация `PdfExportActivity`; `FileProvider` → androidx; `requestLegacyExternalStorage` |
+| `AndroidManifest.xml` | регистрация `PdfExportService` + `FOREGROUND_SERVICE`; `FileProvider` → androidx; `requestLegacyExternalStorage` |
 | `strings.xml` | + строка `make_pdf_book` |
 | build-файлы | jcenter→google()/mavenCentral(), AGP 2.3→7.4, Gradle 3.3→7.5, AndroidX, + зависимость PDFBox |
 
@@ -54,24 +54,32 @@ APK** и лежат в `app/src/main/jniLibs/armeabi-v7a/`:
 
 1. Создайте проект и скачайте сайт/блог как обычно в HTTrack.
 2. На экране завершения нажмите **«PDF book»**.
-3. Откроется экран прогресса: страница за страницей → PDF → склейка.
-   По завершении — **Open PDF** (открывается через FileProvider).
-4. Готовый файл: `book.pdf` в папке проекта
+3. Конвертация идёт **в фоне**: появляется уведомление с прогрессом, приложение
+   можно свернуть и пользоваться телефоном дальше.
+4. По готовности уведомление меняется на «PDF book ready — tap to open»;
+   тап открывает книгу (через FileProvider).
+5. Готовый файл: `book.pdf` в папке проекта
    (`…/HTTrack/<проект>/book.pdf`), временные постраничные PDF удаляются.
 
 ## Ограничения и заметки
 
+* **Фоновый сервис.** Конвертация выполняется в `PdfExportService`
+  (foreground service + уведомление), поэтому переживает сворачивание приложения.
+  WebView в сервисе работает офскрин; на отдельных прошивках офскрин-рендер может
+  капризничать — проверьте на своём устройстве.
 * Печатается **полная** сохранённая страница (вёрстка/CSS/картинки берутся из
   локального зеркала; комментарии сохраняются — ничего не вырезается).
 * Заголовок закладки = `<title>` страницы, иначе первый `<h1>`, иначе имя файла.
 * Предохранитель: не более `MAX_PAGES = 500` страниц за раз (правится в
-  `PdfExportActivity`).
+  `PdfBookEngine`).
 * `targetSdk` намеренно оставлен **28**, чтобы не сломать запись зеркал в
   `/sdcard/HTTrack` из-за scoped storage.
 * **Не проверено сборкой/на устройстве** в этом окружении (нет Android SDK):
   код написан под стандартный приём «WebView → PrintDocumentAdapter → файл».
   Проверьте на реальном устройстве; при необходимости подправьте задержку
-  `SETTLE_MS` для тяжёлых страниц.
+  `SETTLE_MS` в `PdfBookEngine` для тяжёлых страниц.
+* Сборку APK можно не делать вручную — её собирает **GitHub Action**
+  (`.github/workflows/build.yml`), артефакт `httrack-pdf-debug-apk`.
 
 ## Лицензия
 

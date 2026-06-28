@@ -2466,9 +2466,11 @@ public class HTTrackActivity extends FragmentActivity {
   }
 
   /**
-   * "Make PDF book": hand the finished mirror folder to PdfExportActivity,
+   * "Make PDF book": hand the finished mirror folder to PdfExportService,
    * which renders every saved page to PDF and merges them into a single
-   * book.pdf with a clickable table of contents.
+   * book.pdf with a clickable table of contents. Runs in the background as a
+   * foreground service with a progress notification, so the user can leave
+   * the app; when finished the notification opens the book.
    */
   public void onMakePdf(final View view) {
     final File target = getTargetFile();
@@ -2476,10 +2478,11 @@ public class HTTrackActivity extends FragmentActivity {
       showNotification("No downloaded files for this project yet.");
       return;
     }
-    final Intent intent = new Intent(this, PdfExportActivity.class);
-    intent.putExtra(PdfExportActivity.EXTRA_DIR, target.getAbsolutePath());
-    intent.putExtra(PdfExportActivity.EXTRA_TITLE, target.getName());
-    startActivity(intent);
+    final Intent intent = new Intent(this, PdfExportService.class);
+    intent.putExtra(PdfExportService.EXTRA_DIR, target.getAbsolutePath());
+    intent.putExtra(PdfExportService.EXTRA_TITLE, target.getName());
+    ContextCompat.startForegroundService(this, intent);
+    showNotification("Building PDF book in the background… (see the notification)");
   }
 
   /**

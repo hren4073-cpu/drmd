@@ -1,10 +1,7 @@
 package com.httrack.android;
 
-import android.app.Activity;
-import android.content.ActivityNotFoundException;
-import android.content.Intent;
+import android.content.Context;
 import android.net.Uri;
-import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,19 +10,9 @@ import android.print.PageRange;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintDocumentInfo;
-import android.util.Log;
-import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.Button;
-import android.widget.ScrollView;
-import android.widget.TextView;
-import android.widget.Toast;
-
-import androidx.core.content.FileProvider;
-
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -38,54 +25,45 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Renders every saved HTML page of a finished HTTrack mirror to PDF (using the
- * device's own WebView + native print pipeline, no Chrome) and merges them into
- * a single {@code book.pdf} with a clickable table of contents (PDFBox).
+ * UI-agnostic "mirror folder -> book.pdf" pipeline.
  *
- * Started by HTTrackActivity.onMakePdf() with the project directory in
- * {@link #EXTRA_DIR}.
+ * Renders every saved HTML page of a finished HTTrack mirror to PDF using the
+ * device WebView + native print pipeline (no Chrome), then merges them into a
+ * single book.pdf with a clickable table of contents (PDFBox). All WebView
+ * work happens on the main thread; the merge runs on a worker thread.
+ *
+ * Drive it from a foreground Service (background conversion) or an Activity.
  */
-public class PdfExportActivity extends Activity {
-  public static final String EXTRA_DIR = "com.httrack.android.pdf.dir";
-  public static final String EXTRA_TITLE = "com.httrack.android.pdf.title";
+final class PdfBookEngine {
 
-  private static final String TAG = "PdfExport";
-  private static final long SETTLE_MS = 1500;     // let late resources paint
+  interface Listener {
+    void onLog(String line);
+    void onProgress(int done, int total, String status);
+    void onFinished(boolean ok, File book);
+  }
+
+  private static final long SETTLE_MS = 1500;        // let late resources paint
   private static final long PAGE_TIMEOUT_MS = 45000;
-  private static final int MAX_PAGES = 500;       // safety cap for huge mirrors
+  private static final int MAX_PAGES = 500;          // safety cap
 
+  private final Context ctx;
+  private final WebView web;
+  private final Listener listener;
   private final Handler handler = new Handler(Looper.getMainLooper());
 
-  private WebView web;
-  private TextView statusView;
-  private TextView logView;
-  private ScrollView logScroll;
-  private Button openBtn;
-
-  private File dir;          // mirror root
-  private File workDir;      // temp per-page PDFs
-  private File bookFile;     // final book.pdf
-
-  private List<File> htmlFiles = new ArrayList<File>();
-  private List<File> pdfs = new ArrayList<File>();
-  private List<String> titles = new ArrayList<String>();
+  private File workDir;
+  private File bookFile;
+  private final List<File> htmlFiles = new ArrayList<File>();
+  private final List<File> pdfs = new ArrayList<File>();
+  private final List<String> titles = new ArrayList<String>();
   private int idx;
   private boolean pageDone;
   private volatile boolean cancelled;
 
-  @Override
-  protected void onCreate(final Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-    PDFBoxResourceLoader.init(getApplicationContext());
-    setContentView(R.layout.activity_pdf_export);
-
-    web = (WebView) findViewById(R.id.pdfWeb);
-    statusView = (TextView) findViewById(R.id.pdfStatus);
-    logView = (TextView) findViewById(R.id.pdfLog);
-    logScroll = (ScrollView) findViewById(R.id.pdfLogScroll);
-    openBtn = (Button) findViewById(R.id.pdfOpen);
-    final Button cancelBtn = (Button) findViewById(R.id.pdfCancel);
-
+  PdfBookEngine(final Context ctx, final WebView web, final Listener listener) {
+    this.ctx = ctx;
+    this.web = web;
+    this.listener = listener;
     final WebSettings ws = web.getSettings();
     ws.setJavaScriptEnabled(true);
     ws.setLoadWithOverviewMode(true);
@@ -94,45 +72,33 @@ public class PdfExportActivity extends Activity {
     ws.setAllowFileAccessFromFileURLs(true);
     ws.setAllowUniversalAccessFromFileURLs(true);
     ws.setBlockNetworkImage(false);
+  }
 
-    cancelBtn.setOnClickListener(new View.OnClickListener() {
-      @Override public void onClick(final View v) {
-        cancelled = true;
-        v.setEnabled(false);
-        status("Cancelling…");
-      }
-    });
-    openBtn.setOnClickListener(new View.OnClickListener() {
-      @Override public void onClick(final View v) { openBook(); }
-    });
+  void cancel() {
+    cancelled = true;
+  }
 
-    final String path = getIntent().getStringExtra(EXTRA_DIR);
-    if (path == null) {
-      status("No folder supplied.");
-      return;
-    }
-    dir = new File(path);
-    final String title = getIntent().getStringExtra(EXTRA_TITLE);
-    if (title != null) {
-      ((TextView) findViewById(R.id.pdfTitle)).setText("PDF book: " + title);
-    }
+  File getBookFile() {
+    return bookFile;
+  }
+
+  /** Must be called on the main thread. */
+  void start(final File dir) {
     workDir = new File(dir, ".pdf_pages");
     workDir.mkdirs();
     bookFile = new File(dir, "book.pdf");
 
     scanHtml(dir);
     if (htmlFiles.isEmpty()) {
-      status("No HTML pages found in this project.");
-      log("Nothing to convert under " + dir.getAbsolutePath());
+      listener.onLog("No HTML pages found under " + dir.getAbsolutePath());
+      listener.onFinished(false, null);
       return;
     }
-    log("Found " + htmlFiles.size() + " HTML page(s).");
-    status("Converting 0/" + htmlFiles.size() + "…");
+    listener.onLog("Found " + htmlFiles.size() + " HTML page(s).");
     idx = 0;
     handler.post(renderNext);
   }
 
-  /** Collect *.html / *.htm under root, skipping HTTrack's own cache. */
   private void scanHtml(final File root) {
     final File[] children = root.listFiles();
     if (children == null) {
@@ -164,22 +130,23 @@ public class PdfExportActivity extends Activity {
 
   private final Runnable renderNext = new Runnable() {
     @Override public void run() {
-      if (cancelled) { startMerge(); return; }
-      if (idx >= htmlFiles.size()) { startMerge(); return; }
-
+      if (cancelled || idx >= htmlFiles.size()) {
+        startMerge();
+        return;
+      }
       final File html = htmlFiles.get(idx);
-      status("Converting " + (idx + 1) + "/" + htmlFiles.size() + "…");
-      log("[" + (idx + 1) + "] " + html.getName());
+      listener.onProgress(idx, htmlFiles.size(),
+          "Converting " + (idx + 1) + "/" + htmlFiles.size());
+      listener.onLog("[" + (idx + 1) + "] " + html.getName());
 
       final File outPdf = new File(workDir,
           String.format(Locale.US, "page_%04d.pdf", idx + 1));
       pageDone = false;
 
-      // Watchdog: if a page hangs, move on.
       handler.postDelayed(new Runnable() {
         @Override public void run() {
           if (!pageDone) {
-            log("  timeout, skipping");
+            listener.onLog("  timeout, skipping");
             advance(false, null, null);
           }
         }
@@ -230,36 +197,34 @@ public class PdfExportActivity extends Activity {
                       }
                       @Override public void onWriteFailed(final CharSequence error) {
                         try { fd.close(); } catch (final Throwable t) { /* ignore */ }
-                        log("  write failed: " + error);
+                        listener.onLog("  write failed: " + error);
                         advance(false, null, null);
                       }
                     });
               } catch (final Throwable t) {
                 try { if (pfd != null) { pfd.close(); } } catch (final Throwable t2) { /* ignore */ }
-                log("  pdf error: " + t.getMessage());
+                listener.onLog("  pdf error: " + t.getMessage());
                 advance(false, null, null);
               }
             }
             @Override public void onLayoutFailed(final CharSequence error) {
-              log("  layout failed: " + error);
+              listener.onLog("  layout failed: " + error);
               advance(false, null, null);
             }
           }, null);
     } catch (final Throwable t) {
-      Log.w(TAG, "print error", t);
-      log("  adapter error: " + t.getMessage());
+      listener.onLog("  adapter error: " + t.getMessage());
       advance(false, null, null);
     }
   }
 
-  /** Mark current page complete (once) and queue the next one. */
   private void advance(final boolean ok, final File pdf, final File htmlSrc) {
     if (pageDone) { return; }
     pageDone = true;
     if (ok && pdf != null && pdf.length() > 0) {
       pdfs.add(pdf);
       titles.add(titleFor(htmlSrc));
-      log("  ok (" + (pdf.length() / 1024) + " KB)");
+      listener.onLog("  ok (" + (pdf.length() / 1024) + " KB)");
     }
     idx++;
     handler.post(renderNext);
@@ -267,12 +232,13 @@ public class PdfExportActivity extends Activity {
 
   private void startMerge() {
     if (pdfs.isEmpty()) {
-      status("Nothing converted.");
-      log("[done] no pages produced");
+      listener.onLog("[done] no pages produced");
+      listener.onFinished(false, null);
       return;
     }
-    status("Merging " + pdfs.size() + " page(s) into book…");
-    log("[merge] building book.pdf with table of contents…");
+    listener.onProgress(htmlFiles.size(), htmlFiles.size(),
+        "Merging " + pdfs.size() + " page(s)…");
+    listener.onLog("[merge] building book.pdf with table of contents…");
     new Thread(new Runnable() {
       @Override public void run() {
         boolean ok;
@@ -281,20 +247,22 @@ public class PdfExportActivity extends Activity {
         } catch (final Throwable t) {
           ok = false;
           final String m = t.getMessage();
-          runOnUiThread(new Runnable() {
-            @Override public void run() { log("[merge] error: " + m); }
+          handler.post(new Runnable() {
+            @Override public void run() { listener.onLog("[merge] error: " + m); }
           });
         }
         final boolean done = ok;
-        runOnUiThread(new Runnable() {
-          @Override public void run() { finishUp(done); }
+        handler.post(new Runnable() {
+          @Override public void run() {
+            cleanup(done);
+            listener.onFinished(done, done ? bookFile : null);
+          }
         });
       }
     }).start();
   }
 
-  private void finishUp(final boolean ok) {
-    // Clean up the per-page temporaries on success.
+  private void cleanup(final boolean ok) {
     if (ok && workDir != null) {
       final File[] tmp = workDir.listFiles();
       if (tmp != null) {
@@ -302,33 +270,10 @@ public class PdfExportActivity extends Activity {
       }
       workDir.delete();
     }
-    if (ok) {
-      openBtn.setEnabled(true);
-      status("Done — book.pdf ready (" + (bookFile.length() / 1024) + " KB).");
-      log("[done] " + bookFile.getAbsolutePath());
-    } else {
-      status("Failed.");
-      log("[done] could not build the book");
-    }
   }
 
-  private void openBook() {
-    if (bookFile == null || !bookFile.exists()) { return; }
-    try {
-      final Uri uri = FileProvider.getUriForFile(this,
-          getPackageName() + ".fileprovider", bookFile);
-      final Intent view = new Intent(Intent.ACTION_VIEW);
-      view.setDataAndType(uri, "application/pdf");
-      view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-      startActivity(Intent.createChooser(view, "Open book.pdf"));
-    } catch (final ActivityNotFoundException e) {
-      Toast.makeText(this, "No PDF viewer installed.", Toast.LENGTH_LONG).show();
-    } catch (final Throwable t) {
-      Toast.makeText(this, "Cannot open: " + t.getMessage(), Toast.LENGTH_LONG).show();
-    }
-  }
+  // -- title extraction --------------------------------------------------
 
-  /** Bookmark title: <title>, else first <h1>, else the file name. */
   private static final Pattern TITLE_RE =
       Pattern.compile("<title[^>]*>(.*?)</title>",
           Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
@@ -340,7 +285,7 @@ public class PdfExportActivity extends Activity {
     if (html == null) { return "Page"; }
     try {
       final byte[] buf = new byte[64 * 1024];
-      int n;
+      final int n;
       final FileInputStream in = new FileInputStream(html);
       try {
         n = in.read(buf);
@@ -367,21 +312,5 @@ public class PdfExportActivity extends Activity {
   private static String firstGroup(final Pattern p, final String s) {
     final Matcher m = p.matcher(s);
     return m.find() ? m.group(1) : null;
-  }
-
-  private void status(final String s) { statusView.setText(s); }
-
-  private void log(final String line) {
-    logView.append(line + "\n");
-    logScroll.post(new Runnable() {
-      @Override public void run() { logScroll.fullScroll(View.FOCUS_DOWN); }
-    });
-  }
-
-  @Override
-  protected void onDestroy() {
-    cancelled = true;
-    handler.removeCallbacksAndMessages(null);
-    super.onDestroy();
   }
 }
