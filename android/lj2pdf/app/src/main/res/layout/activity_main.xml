@@ -132,8 +132,22 @@
             android:layout_height="wrap_content"
             android:textAppearance="?attr/textAppearanceBodySmall"
             android:paddingTop="4dp"
-            android:paddingBottom="8dp"
+            android:paddingBottom="4dp"
             android:text="" />
+
+        <CheckBox
+            android:id="@+id/cbAll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="Whole blog — first page to the last (auto)" />
+
+        <CheckBox
+            android:id="@+id/cbClean"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
+            android:text="Remove ads / clean pages" />
 
         <!-- Output folder -->
         <LinearLayout

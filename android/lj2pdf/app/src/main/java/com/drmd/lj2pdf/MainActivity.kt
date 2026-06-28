@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.View
+import android.widget.CheckBox
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
@@ -29,6 +30,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private lateinit var edtUrl: TextInputEditText
     private lateinit var rowPager: View
     private lateinit var tilStep: TextInputLayout
+    private lateinit var cbAll: CheckBox
+    private lateinit var cbClean: CheckBox
+    private lateinit var tilTo: TextInputLayout
     private lateinit var edtFrom: TextInputEditText
     private lateinit var edtTo: TextInputEditText
     private lateinit var edtStep: TextInputEditText
@@ -73,6 +77,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         edtUrl = findViewById(R.id.edtUrl)
         rowPager = findViewById(R.id.rowPager)
         tilStep = findViewById(R.id.tilStep)
+        cbAll = findViewById(R.id.cbAll)
+        cbClean = findViewById(R.id.cbClean)
+        tilTo = findViewById(R.id.tilTo)
         edtFrom = findViewById(R.id.edtFrom)
         edtTo = findViewById(R.id.edtTo)
         edtStep = findViewById(R.id.edtStep)
@@ -90,6 +97,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         updateOutLabel()
 
         rgMode.setOnCheckedChangeListener { _, _ -> applyMode() }
+        cbAll.setOnCheckedChangeListener { _, _ -> applyAllToggle() }
         applyMode()
 
         findViewById<MaterialButton>(R.id.btnChooseOut).setOnClickListener {
@@ -113,13 +121,15 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     }
 
     private fun applyMode() {
-        when (mode()) {
+        val m = mode()
+        cbAll.visibility = if (m == Mode.LJ) View.VISIBLE else View.GONE
+        when (m) {
             Mode.LJ -> {
                 rowPager.visibility = View.VISIBLE
                 tilStep.visibility = View.VISIBLE
                 tilUrl.hint = "Blog URL"
-                edtUrl.setText(prefillIfPlaceholder("https://"))
-                txtHint.text = "Page k = BASE/?skip=(k-1)×entries. Keep 20 for LiveJournal."
+                txtHint.text =
+                    "Whole blog: keep the box checked — it walks ?skip= to the last page."
             }
             Mode.TEMPLATE -> {
                 rowPager.visibility = View.VISIBLE
@@ -134,11 +144,13 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 txtHint.text = "A single page → one PDF."
             }
         }
+        applyAllToggle()
     }
 
-    private fun prefillIfPlaceholder(p: String): String {
-        val cur = edtUrl.text?.toString().orEmpty()
-        return if (cur.isBlank()) p else cur
+    /** In LJ "whole blog" mode the To field is irrelevant. */
+    private fun applyAllToggle() {
+        val auto = mode() == Mode.LJ && cbAll.isChecked
+        tilTo.visibility = if (auto) View.GONE else View.VISIBLE
     }
 
     private fun onStart() {
@@ -147,40 +159,59 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
             toast("Enter a URL starting with http(s)://"); return
         }
+        val from = edtFrom.text?.toString()?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+        val step = edtStep.text?.toString()?.toIntOrNull()?.coerceAtLeast(1) ?: 20
+        val clean = cbClean.isChecked
+        val name = (Uri.parse(raw.replace("{n}", "1")).host
+            ?.replace(Regex("[^A-Za-z0-9.-]"), "_") ?: "book") + "_book"
 
-        val urls = ArrayList<String>()
-        val titles = ArrayList<String>()
-        when (mode()) {
-            Mode.LJ -> {
-                val base = raw.trimEnd('/')
-                val from = edtFrom.text?.toString()?.toIntOrNull()?.coerceAtLeast(1) ?: 1
-                var to = edtTo.text?.toString()?.toIntOrNull() ?: from
-                if (to < from) to = from
-                val step = edtStep.text?.toString()?.toIntOrNull()?.coerceAtLeast(1) ?: 20
-                for (k in from..to) {
-                    val skip = (k - 1) * step
-                    urls.add(if (skip == 0) "$base/" else "$base/?skip=$skip")
-                    titles.add("Страница $k")
-                }
-            }
-            Mode.TEMPLATE -> {
-                if (!raw.contains("{n}")) { toast("Template must contain {n}"); return }
-                val from = edtFrom.text?.toString()?.toIntOrNull()?.coerceAtLeast(1) ?: 1
-                var to = edtTo.text?.toString()?.toIntOrNull() ?: from
-                if (to < from) to = from
-                for (k in from..to) {
-                    urls.add(raw.replace("{n}", k.toString()))
-                    titles.add("Страница $k")
-                }
-            }
-            Mode.SINGLE -> {
-                urls.add(raw)
-                titles.add(Uri.parse(raw).host ?: "Page")
-            }
+        val intent = Intent(this, ConvertService::class.java).apply {
+            putExtra(ConvertService.EXTRA_NAME, name)
+            putExtra(ConvertService.EXTRA_CLEAN, clean)
+            treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
-        if (urls.isEmpty()) { toast("Nothing to convert."); return }
 
-        // Ask for the notification permission (Android 13+) so the progress shows.
+        if (mode() == Mode.LJ && cbAll.isChecked) {
+            // Whole blog: walk ?skip= from `from` to the last page automatically.
+            intent.putExtra(ConvertService.EXTRA_MODE, "lj_auto")
+            intent.putExtra(ConvertService.EXTRA_BASE, raw.trimEnd('/'))
+            intent.putExtra(ConvertService.EXTRA_STEP, step)
+            intent.putExtra(ConvertService.EXTRA_FROM, from)
+        } else {
+            val urls = ArrayList<String>()
+            val titles = ArrayList<String>()
+            when (mode()) {
+                Mode.LJ -> {
+                    val base = raw.trimEnd('/')
+                    var to = edtTo.text?.toString()?.toIntOrNull() ?: from
+                    if (to < from) to = from
+                    for (k in from..to) {
+                        val skip = (k - 1) * step
+                        urls.add(if (skip == 0) "$base/" else "$base/?skip=$skip")
+                        titles.add("Страница $k")
+                    }
+                }
+                Mode.TEMPLATE -> {
+                    if (!raw.contains("{n}")) { toast("Template must contain {n}"); return }
+                    var to = edtTo.text?.toString()?.toIntOrNull() ?: from
+                    if (to < from) to = from
+                    for (k in from..to) {
+                        urls.add(raw.replace("{n}", k.toString()))
+                        titles.add("Страница $k")
+                    }
+                }
+                Mode.SINGLE -> {
+                    urls.add(raw)
+                    titles.add(Uri.parse(raw).host ?: "Page")
+                }
+            }
+            if (urls.isEmpty()) { toast("Nothing to convert."); return }
+            intent.putExtra(ConvertService.EXTRA_MODE, "list")
+            intent.putStringArrayListExtra(ConvertService.EXTRA_URLS, urls)
+            intent.putStringArrayListExtra(ConvertService.EXTRA_TITLES, titles)
+        }
+
+        // Ask for the notification permission (Android 13+) so progress shows.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
@@ -188,19 +219,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             askNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        val name = (Uri.parse(raw.replace("{n}", "1")).host
-            ?.replace(Regex("[^A-Za-z0-9.-]"), "_") ?: "book") + "_book"
-
         txtLog.text = ""
         txtStatus.text = "Starting…"
         setBusy(true)
-
-        val intent = Intent(this, ConvertService::class.java).apply {
-            putStringArrayListExtra(ConvertService.EXTRA_URLS, urls)
-            putStringArrayListExtra(ConvertService.EXTRA_TITLES, titles)
-            putExtra(ConvertService.EXTRA_NAME, name)
-            treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
-        }
         ContextCompat.startForegroundService(this, intent)
     }
 

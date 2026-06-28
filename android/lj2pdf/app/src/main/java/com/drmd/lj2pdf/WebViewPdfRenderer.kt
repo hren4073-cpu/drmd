@@ -14,23 +14,26 @@ import java.io.FileOutputStream
 import kotlin.coroutines.resume
 
 /**
- * Renders web pages to PDF using a single offscreen [WebView] drawn straight
- * onto a [PdfDocument] canvas — no Chrome, and crucially no
- * PrintDocumentAdapter (whose result-callback constructors are package-private
- * and cannot be subclassed from app code).
+ * Renders web pages to PDF by drawing an offscreen [WebView] straight onto a
+ * [PdfDocument] canvas — no Chrome, no PrintDocumentAdapter.
  *
- * Pages are A4; long pages are split into multiple A4 pages. All WebView work
- * must happen on the main thread.
+ * Extras for blog archiving:
+ *  - optional in-page CLEANING (removes ads/promo/banners via injected JS),
+ *  - entry detection (counts post permalinks) so the caller can walk a blog
+ *    "to the last page" and stop automatically when a page has no entries.
+ *
+ * All WebView work must happen on the main thread.
  */
 class WebViewPdfRenderer(
     private val web: WebView,
     private val log: (String) -> Unit
 ) {
-    // A4 at 72 dpi, in PostScript points.
-    private val pageWidthPt = 595
+    /** ok: PDF written; signature: post permalinks on the page; count: their number. */
+    data class RenderResult(val ok: Boolean, val signature: String, val count: Int)
+
+    private val pageWidthPt = 595          // A4 @72dpi
     private val pageHeightPt = 842
-    // Lay the page out wider than A4 for crisp text, then scale down to fit.
-    private val renderWidthPx = 1080
+    private val renderWidthPx = 1080        // render wide, scale down for crisp text
     private val scale = pageWidthPt.toFloat() / renderWidthPx
 
     init {
@@ -41,16 +44,35 @@ class WebViewPdfRenderer(
             domStorageEnabled = true
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
-        // draw() only renders onto a software canvas if the layer is software.
         web.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
     }
 
-    /** Load [url], wait for it to settle, then write a PDF to [outFile]. */
-    suspend fun renderUrlToPdf(url: String, outFile: File, settleMs: Long): Boolean {
-        if (!loadPage(url)) return false
-        delay(settleMs)        // let late resources / web fonts / images paint
-        return drawToPdf(outFile)
+    /**
+     * Load [url], optionally clean it, count entries, and (unless the page is
+     * empty while [requireEntries]) draw it to [outFile].
+     */
+    suspend fun render(
+        url: String, outFile: File, settleMs: Long,
+        clean: Boolean, requireEntries: Boolean
+    ): RenderResult {
+        if (!loadPage(url)) return RenderResult(false, "", -1)
+        delay(settleMs)
+        if (clean) {
+            evalJs(CLEAN_JS)
+            delay(250)
+        }
+        val signature = evalJs(COUNT_JS).trim().removeSurrounding("\"")
+        val count = if (signature.isEmpty()) 0 else signature.split(',').size
+        if (requireEntries && count == 0) {
+            return RenderResult(false, "", 0)   // past the last page -> stop
+        }
+        val ok = drawToPdf(outFile)
+        return RenderResult(ok, signature, count)
     }
+
+    /** Simple variant for non-blog modes (single page / template). */
+    suspend fun renderUrlToPdf(url: String, outFile: File, settleMs: Long, clean: Boolean): Boolean =
+        render(url, outFile, settleMs, clean, requireEntries = false).ok
 
     private suspend fun loadPage(url: String): Boolean =
         suspendCancellableCoroutine { cont ->
@@ -60,9 +82,7 @@ class WebViewPdfRenderer(
                     if (!settled) { settled = true; if (cont.isActive) cont.resume(true) }
                 }
                 override fun onReceivedError(
-                    view: WebView,
-                    request: WebResourceRequest,
-                    error: WebResourceError
+                    view: WebView, request: WebResourceRequest, error: WebResourceError
                 ) {
                     if (request.isForMainFrame && !settled) {
                         settled = true
@@ -73,9 +93,19 @@ class WebViewPdfRenderer(
             web.loadUrl(url)
         }
 
+    private suspend fun evalJs(script: String): String =
+        suspendCancellableCoroutine { cont ->
+            try {
+                web.evaluateJavascript(script) { value ->
+                    if (cont.isActive) cont.resume(value ?: "")
+                }
+            } catch (t: Throwable) {
+                if (cont.isActive) cont.resume("")
+            }
+        }
+
     private fun drawToPdf(outFile: File): Boolean {
         return try {
-            // Lay the WebView out at full content height, fixed width.
             web.measure(
                 View.MeasureSpec.makeMeasureSpec(renderWidthPx, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
@@ -88,8 +118,7 @@ class WebViewPdfRenderer(
 
             val doc = PdfDocument()
             for (i in 0 until pages) {
-                val info = PdfDocument.PageInfo
-                    .Builder(pageWidthPt, pageHeightPt, i + 1).create()
+                val info = PdfDocument.PageInfo.Builder(pageWidthPt, pageHeightPt, i + 1).create()
                 val page = doc.startPage(info)
                 val c = page.canvas
                 c.save()
@@ -106,5 +135,44 @@ class WebViewPdfRenderer(
             log("  pdf error: ${t.message}")
             false
         }
+    }
+
+    companion object {
+        /** Remove ads / promo / banners and force a clean white background. */
+        private const val CLEAN_JS = """
+(function(){
+  try{
+    var sel = ['ins.adsbygoogle','[id*="google_ads"]','[id^="ad-"]','[id*="adfox"]',
+      '[class*="adfox"]','[class*="advert"]','[class*="-ad-"]','[class*="banner"]',
+      '[id*="banner"]','[data-ad]','iframe[src*="ad"]','iframe[src*="banner"]',
+      '.lj-promo','.ljad','.appwidget-ljad','.lj-app-banner','.b-popup',
+      '[class*="promo"]','[id*="promo"]','.adv','.ads','[class*="yandex_ad"]'];
+    sel.forEach(function(s){
+      var n=document.querySelectorAll(s);
+      for(var i=0;i<n.length;i++){ if(n[i]&&n[i].parentNode) n[i].parentNode.removeChild(n[i]); }
+    });
+    var st=document.createElement('style');
+    st.innerHTML='body{background:#fff!important}'+
+      'iframe[src*="ad"],iframe[src*="banner"],ins.adsbygoogle{display:none!important}';
+    (document.head||document.documentElement).appendChild(st);
+    return 'ok';
+  }catch(e){ return 'err'; }
+})();
+"""
+
+        /** Distinct post permalinks (host/<digits>.html) -> entry signature. */
+        private const val COUNT_JS = """
+(function(){
+  try{
+    var host=location.host, a=document.querySelectorAll('a[href*=".html"]'), seen={};
+    for(var i=0;i<a.length;i++){
+      var h=a[i].href||'';
+      var m=h.match(/^https?:\/\/([^\/]+)\/(\d+)\.html/);
+      if(m && m[1].indexOf(host)!==-1) seen[m[2]]=1;
+    }
+    return Object.keys(seen).sort().join(',');
+  }catch(e){ return ''; }
+})();
+"""
     }
 }
