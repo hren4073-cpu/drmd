@@ -2,7 +2,7 @@
 
     <!--
         Base application theme, dependent on API level. This theme is replaced
-        by AppBaseTheme from res/values-vXX/styles.xml on newer devices.
+        by AppBaseTheme from res/values-vXX/styles.xml on newer devices.
     -->
 
 
@@ -21,7 +21,10 @@
     </style>
 
     <!-- Custom styles -->
-    <style name="ButtonStyle" parent="@android:attr/buttonStyle" />
+    <!-- parent must be a *style*, not @android:attr/buttonStyle (the old AAPT
+         tolerated the attr ref; AAPT2 rejects it). Widget.Button is the
+         framework default button look. -->
+    <style name="ButtonStyle" parent="@android:style/Widget.Button" />
 
     <style name="DividerLineVertical">
         <item name="android:layout_width">0dip</item>
