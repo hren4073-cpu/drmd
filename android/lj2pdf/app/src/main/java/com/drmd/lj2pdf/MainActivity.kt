@@ -103,7 +103,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         findViewById<MaterialButton>(R.id.btnChooseOut).setOnClickListener {
             try { pickFolder.launch(null) } catch (t: Throwable) { toast("No file picker available.") }
         }
-        btnStart.setOnClickListener { onStart() }
+        btnStart.setOnClickListener { startConversion() }
         btnCancel.setOnClickListener {
             ConvertBus.cancelRequested = true
             btnCancel.isEnabled = false
@@ -153,7 +153,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         tilTo.visibility = if (auto) View.GONE else View.VISIBLE
     }
 
-    private fun onStart() {
+    private fun startConversion() {
         if (ConvertBus.running) { toast("Already running."); return }
         val raw = edtUrl.text?.toString()?.trim().orEmpty()
         if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
