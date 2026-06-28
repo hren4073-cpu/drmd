@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             } catch (_: Throwable) { /* service may have stopped */ }
         }
         btnOpen.setOnClickListener { openBook() }
+        findViewById<MaterialButton>(R.id.btnProjects).setOnClickListener { showProjectsDialog() }
     }
 
     private enum class Mode { LJ, TEMPLATE, SINGLE }
@@ -177,7 +178,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             Mode.LJ -> {
                 intent.putExtra(
                     ConvertService.EXTRA_MODE,
-                    if (cbArchive.isChecked) "lj_archive" else "lj_pages"
+                    if (cbArchive.isChecked) "lj_project" else "lj_pages"
                 )
                 intent.putExtra(ConvertService.EXTRA_AUTO, cbAll.isChecked)
                 intent.putExtra(ConvertService.EXTRA_BASE, raw.trimEnd('/'))
@@ -295,9 +296,10 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         }
     }
 
-    private fun openBook() {
-        val book = ConvertBus.lastBook ?: return
-        if (!book.exists()) { toast("Book not found."); return }
+    private fun openBook() = openFile(ConvertBus.lastBook)
+
+    private fun openFile(book: File?) {
+        if (book == null || !book.exists()) { toast("Book not found."); return }
         try {
             val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", book)
             val view = Intent(Intent.ACTION_VIEW).apply {
@@ -308,6 +310,62 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         } catch (t: Throwable) {
             toast("No PDF viewer installed.")
         }
+    }
+
+    // -- projects (saved blogs, incremental update) -----------------------
+
+    private fun showProjectsDialog() {
+        val projects = Projects.list(this)
+        if (projects.isEmpty()) {
+            toast("No projects yet — archive a blog first (LiveJournal + Full posts).")
+            return
+        }
+        val names = projects.map { "${it.name}  (${it.entries().size} posts)" }.toTypedArray()
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Projects")
+            .setItems(names) { _, i -> showProjectActions(projects[i]) }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showProjectActions(p: Project) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(p.name)
+            .setItems(arrayOf("Update (add new posts)", "Open PDF", "Delete")) { _, i ->
+                when (i) {
+                    0 -> updateProject(p)
+                    1 -> openFile(p.bookFile)
+                    2 -> confirmDelete(p)
+                }
+            }
+            .show()
+    }
+
+    private fun confirmDelete(p: Project) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Delete ${p.name}?")
+            .setMessage("Removes the saved posts and book for this blog.")
+            .setPositiveButton("Delete") { _, _ -> Projects.delete(p); toast("Deleted ${p.name}") }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateProject(p: Project) {
+        if (ConvertBus.running) { toast("Already running."); return }
+        if (p.base.isBlank()) { toast("Project has no saved URL."); return }
+        val intent = Intent(this, ConvertService::class.java).apply {
+            putExtra(ConvertService.EXTRA_MODE, "lj_project")
+            putExtra(ConvertService.EXTRA_AUTO, true)        // update = add all new posts
+            putExtra(ConvertService.EXTRA_BASE, p.base)
+            putExtra(ConvertService.EXTRA_FROM, 1)
+            putExtra(ConvertService.EXTRA_MAX, 2000)
+            putExtra(ConvertService.EXTRA_CLEAN, cbClean.isChecked)
+            treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
+        }
+        txtLog.text = ""
+        txtStatus.text = "Updating ${p.name}…"
+        setBusy(true)
+        ContextCompat.startForegroundService(this, intent)
     }
 
     private fun setBusy(busy: Boolean) {
