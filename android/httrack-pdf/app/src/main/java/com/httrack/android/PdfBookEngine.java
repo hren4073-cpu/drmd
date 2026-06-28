@@ -1,21 +1,19 @@
 package com.httrack.android;
 
 import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.pdf.PdfDocument;
 import android.net.Uri;
-import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.ParcelFileDescriptor;
-import android.print.PageRange;
-import android.print.PrintAttributes;
-import android.print.PrintDocumentAdapter;
-import android.print.PrintDocumentInfo;
+import android.view.View;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -27,12 +25,13 @@ import java.util.regex.Pattern;
 /**
  * UI-agnostic "mirror folder -> book.pdf" pipeline.
  *
- * Renders every saved HTML page of a finished HTTrack mirror to PDF using the
- * device WebView + native print pipeline (no Chrome), then merges them into a
- * single book.pdf with a clickable table of contents (PDFBox). All WebView
- * work happens on the main thread; the merge runs on a worker thread.
+ * Renders every saved HTML page of a finished HTTrack mirror to PDF by drawing
+ * the WebView straight onto a {@link PdfDocument} canvas (no Chrome, and no
+ * PrintDocumentAdapter — its result-callback constructors are package-private
+ * and cannot be subclassed). Long pages are split across A4 pages. Then the
+ * per-page PDFs are merged into one book with a TOC (PDFBox).
  *
- * Drive it from a foreground Service (background conversion) or an Activity.
+ * All WebView work happens on the main thread; the merge runs on a worker.
  */
 final class PdfBookEngine {
 
@@ -46,7 +45,12 @@ final class PdfBookEngine {
   private static final long PAGE_TIMEOUT_MS = 45000;
   private static final int MAX_PAGES = 500;          // safety cap
 
-  private final Context ctx;
+  // A4 at 72 dpi (points); render wider for crisp text then scale to fit.
+  private static final int PAGE_W_PT = 595;
+  private static final int PAGE_H_PT = 842;
+  private static final int RENDER_W_PX = 1080;
+  private static final float SCALE = (float) PAGE_W_PT / RENDER_W_PX;
+
   private final WebView web;
   private final Listener listener;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -61,7 +65,6 @@ final class PdfBookEngine {
   private volatile boolean cancelled;
 
   PdfBookEngine(final Context ctx, final WebView web, final Listener listener) {
-    this.ctx = ctx;
     this.web = web;
     this.listener = listener;
     final WebSettings ws = web.getSettings();
@@ -72,6 +75,8 @@ final class PdfBookEngine {
     ws.setAllowFileAccessFromFileURLs(true);
     ws.setAllowUniversalAccessFromFileURLs(true);
     ws.setBlockNetworkImage(false);
+    // draw() only renders onto a software canvas if the layer is software.
+    web.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
   }
 
   void cancel() {
@@ -158,7 +163,10 @@ final class PdfBookEngine {
           if (settled) { return; }
           settled = true;
           handler.postDelayed(new Runnable() {
-            @Override public void run() { printToPdf(outPdf, html); }
+            @Override public void run() {
+              final boolean ok = drawToPdf(outPdf);
+              advance(ok, outPdf, html);
+            }
           }, SETTLE_MS);
         }
       });
@@ -166,55 +174,44 @@ final class PdfBookEngine {
     }
   };
 
-  private void printToPdf(final File outPdf, final File htmlSrc) {
-    if (pageDone) { return; }
+  /** Draw the currently loaded page onto an A4 (multi-page) PdfDocument. */
+  private boolean drawToPdf(final File outFile) {
+    if (pageDone) { return false; }
+    FileOutputStream out = null;
     try {
-      final PrintDocumentAdapter adapter = web.createPrintDocumentAdapter("page");
-      final PrintAttributes attrs = new PrintAttributes.Builder()
-          .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-          .setResolution(new PrintAttributes.Resolution("pdf", "pdf", 600, 600))
-          .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-          .build();
-      adapter.onStart();
-      adapter.onLayout(null, attrs, new CancellationSignal(),
-          new PrintDocumentAdapter.LayoutResultCallback() {
-            @Override public void onLayoutFinished(final PrintDocumentInfo info,
-                                                   final boolean changed) {
-              ParcelFileDescriptor pfd = null;
-              try {
-                pfd = ParcelFileDescriptor.open(outPdf,
-                    ParcelFileDescriptor.MODE_READ_WRITE
-                        | ParcelFileDescriptor.MODE_CREATE
-                        | ParcelFileDescriptor.MODE_TRUNCATE);
-                final ParcelFileDescriptor fd = pfd;
-                adapter.onWrite(new PageRange[] { PageRange.ALL_PAGES }, fd,
-                    new CancellationSignal(),
-                    new PrintDocumentAdapter.WriteResultCallback() {
-                      @Override public void onWriteFinished(final PageRange[] pages) {
-                        try { adapter.onFinish(); } catch (final Throwable t) { /* ignore */ }
-                        try { fd.close(); } catch (final Throwable t) { /* ignore */ }
-                        advance(true, outPdf, htmlSrc);
-                      }
-                      @Override public void onWriteFailed(final CharSequence error) {
-                        try { fd.close(); } catch (final Throwable t) { /* ignore */ }
-                        listener.onLog("  write failed: " + error);
-                        advance(false, null, null);
-                      }
-                    });
-              } catch (final Throwable t) {
-                try { if (pfd != null) { pfd.close(); } } catch (final Throwable t2) { /* ignore */ }
-                listener.onLog("  pdf error: " + t.getMessage());
-                advance(false, null, null);
-              }
-            }
-            @Override public void onLayoutFailed(final CharSequence error) {
-              listener.onLog("  layout failed: " + error);
-              advance(false, null, null);
-            }
-          }, null);
+      web.measure(
+          View.MeasureSpec.makeMeasureSpec(RENDER_W_PX, View.MeasureSpec.EXACTLY),
+          View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+      final int contentH = Math.max(1, web.getMeasuredHeight());
+      web.layout(0, 0, RENDER_W_PX, contentH);
+
+      final int pageHeightPx = Math.max(1, (int) (PAGE_H_PT / SCALE));
+      final int pages = Math.max(1, (contentH + pageHeightPx - 1) / pageHeightPx);
+
+      final PdfDocument doc = new PdfDocument();
+      for (int i = 0; i < pages; i++) {
+        final PdfDocument.PageInfo info =
+            new PdfDocument.PageInfo.Builder(PAGE_W_PT, PAGE_H_PT, i + 1).create();
+        final PdfDocument.Page page = doc.startPage(info);
+        final Canvas c = page.getCanvas();
+        c.save();
+        c.scale(SCALE, SCALE);
+        c.translate(0f, (float) (-i * pageHeightPx));
+        web.draw(c);
+        c.restore();
+        doc.finishPage(page);
+      }
+      out = new FileOutputStream(outFile);
+      doc.writeTo(out);
+      doc.close();
+      return true;
     } catch (final Throwable t) {
-      listener.onLog("  adapter error: " + t.getMessage());
-      advance(false, null, null);
+      listener.onLog("  pdf error: " + t.getMessage());
+      return false;
+    } finally {
+      if (out != null) {
+        try { out.close(); } catch (final Throwable t) { /* ignore */ }
+      }
     }
   }
 

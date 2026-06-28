@@ -4,7 +4,9 @@
     <style name="AppBaseTheme" parent="@android:style/Theme.Holo.Light" />
 
     <!-- Custom styles -->
-    <style name="ButtonStyle" parent="@android:attr/buttonStyle">
+    <!-- parent must be a *style*, not @android:attr/buttonStyle (AAPT2 rejects
+         the attr ref that the old AAPT tolerated). -->
+    <style name="ButtonStyle" parent="@android:style/Widget.Holo.Light.Button">
         <item name="android:background">?android:attr/selectableItemBackground</item>
     </style>
 
