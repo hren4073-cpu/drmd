@@ -1,167 +1,228 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  The WebView sits BEHIND an opaque ScrollView. It is laid out at full size
-  (so pages render correctly for printing) but is never visible to the user.
--->
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/scrollRoot"
     android:layout_width="match_parent"
-    android:layout_height="match_parent">
+    android:layout_height="match_parent"
+    android:fillViewport="true">
 
-    <WebView
-        android:id="@+id/web"
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <ScrollView
-        android:id="@+id/formScroll"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@android:color/white"
-        android:fillViewport="true">
-
-        <LinearLayout
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
+            android:text="@string/app_name"
+            android:textAppearance="?attr/textAppearanceHeadlineSmall"
+            android:paddingBottom="12dp" />
 
-            <TextView
+        <!-- Mode selector -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            app:cardElevation="0dp"
+            app:strokeWidth="1dp">
+
+            <RadioGroup
+                android:id="@+id/rgMode"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="LiveJournal blog → PDF book"
-                android:textSize="20sp"
-                android:textStyle="bold"
-                android:paddingBottom="12dp" />
+                android:orientation="vertical"
+                android:padding="8dp">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Blog URL" />
-            <EditText
+                <RadioButton
+                    android:id="@+id/rbLj"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:checked="true"
+                    android:text="LiveJournal blog (paginated)" />
+
+                <RadioButton
+                    android:id="@+id/rbTemplate"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Paginated site (URL with {n})" />
+
+                <RadioButton
+                    android:id="@+id/rbSingle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Single page" />
+            </RadioGroup>
+        </com.google.android.material.card.MaterialCardView>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Blog URL">
+
+            <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/edtUrl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="https://someblog.livejournal.com"
                 android:inputType="textUri"
                 android:text="https://" />
+        </com.google.android.material.textfield.TextInputLayout>
 
-            <LinearLayout
-                android:layout_width="match_parent"
+        <!-- From / To / Entries-per-page -->
+        <LinearLayout
+            android:id="@+id/rowPager"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/tilFrom"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="8dp">
+                android:layout_weight="1"
+                android:hint="From">
 
-                <LinearLayout
-                    android:layout_width="0dp"
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/edtFrom"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="From page" />
-                    <EditText
-                        android:id="@+id/edtFrom"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="number"
-                        android:text="1" />
-                </LinearLayout>
+                    android:inputType="number"
+                    android:text="1" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:paddingStart="8dp"
-                    android:paddingLeft="8dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="To page" />
-                    <EditText
-                        android:id="@+id/edtTo"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="number"
-                        android:text="10" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical"
-                    android:paddingStart="8dp"
-                    android:paddingLeft="8dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Entries/page" />
-                    <EditText
-                        android:id="@+id/edtStep"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="number"
-                        android:text="20" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/tilTo"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:text="Page k = BASE/?skip=(k-1)×entries. Keep 20 for LiveJournal."
-                android:textSize="12sp"
-                android:paddingTop="4dp"
-                android:paddingBottom="8dp" />
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:hint="To">
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="8dp">
-                <Button
-                    android:id="@+id/btnStart"
-                    android:layout_width="0dp"
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/edtTo"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Start" />
-                <Button
-                    android:id="@+id/btnCancel"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="Cancel" />
-                <Button
-                    android:id="@+id/btnOpen"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:enabled="false"
-                    android:text="Open PDF" />
-            </LinearLayout>
+                    android:inputType="number"
+                    android:text="10" />
+            </com.google.android.material.textfield.TextInputLayout>
 
-            <TextView
-                android:id="@+id/txtStatus"
-                android:layout_width="match_parent"
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/tilStep"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:paddingTop="8dp"
-                android:text="Ready."
-                android:textStyle="bold" />
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:hint="Per page">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:paddingTop="8dp"
-                android:text="Log:" />
-            <TextView
-                android:id="@+id/txtLog"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:fontFamily="monospace"
-                android:textSize="12sp"
-                android:textIsSelectable="true" />
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/edtStep"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="number"
+                    android:text="20" />
+            </com.google.android.material.textfield.TextInputLayout>
         </LinearLayout>
-    </ScrollView>
-</FrameLayout>
+
+        <TextView
+            android:id="@+id/txtHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAppearance="?attr/textAppearanceBodySmall"
+            android:paddingTop="4dp"
+            android:paddingBottom="8dp"
+            android:text="" />
+
+        <!-- Output folder -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="4dp">
+
+            <TextView
+                android:id="@+id/txtOut"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:text="Output: app folder" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnChooseOut"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Folder" />
+        </LinearLayout>
+
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/progress"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/txtStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:text="Ready." />
+
+        <!-- Actions -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStart"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Start" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCancel"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:enabled="false"
+                android:text="Cancel" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnOpen"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:enabled="false"
+                android:text="Open PDF" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textAppearance="?attr/textAppearanceLabelLarge"
+            android:text="Log" />
+
+        <TextView
+            android:id="@+id/txtLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:textIsSelectable="true"
+            android:paddingTop="4dp" />
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>

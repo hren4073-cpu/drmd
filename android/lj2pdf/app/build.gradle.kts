@@ -10,9 +10,10 @@ android {
     defaultConfig {
         applicationId = "com.drmd.lj2pdf"
         minSdk = 21
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        // 33 (not 34) so the foreground service needs no Android-14 FGS type.
+        targetSdk = 33
+        versionCode = 2
+        versionName = "2.0"
     }
 
     buildTypes {
@@ -37,6 +38,9 @@ android {
 dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.activity:activity-ktx:1.7.2")
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     // Pure-JVM port of Apache PDFBox for Android: merge + outline/bookmarks.
