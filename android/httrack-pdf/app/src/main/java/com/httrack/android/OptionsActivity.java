@@ -348,8 +348,10 @@ public class OptionsActivity extends Activity implements View.OnClickListener {
     mapper.setContext(this);
     mapper.resetMap();
 
-    // Load map
-    mapper.unserialize(getIntent()
+    // Load map. Cast needed: getParcelableExtra() is generic on modern SDKs,
+    // so the call would otherwise match both unserialize(File) and
+    // unserialize(Parcelable) and be ambiguous.
+    mapper.unserialize((android.os.Parcelable) getIntent()
         .getParcelableExtra("com.httrack.android.map"));
     Log.d(getClass().getSimpleName(), "map size: " + mapper.size());
 
