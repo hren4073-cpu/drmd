@@ -427,11 +427,19 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun showProjectActions(p: Project) {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle(p.name)
-            .setItems(arrayOf("Update (add new posts)", "Open PDF", "Delete")) { _, i ->
+            .setItems(
+                arrayOf(
+                    "Update (new posts)",
+                    "Deep rescan (incl. backdated)",
+                    "Open PDF",
+                    "Delete"
+                )
+            ) { _, i ->
                 when (i) {
-                    0 -> updateProject(p)
-                    1 -> openFile(p.bookFile)
-                    2 -> confirmDelete(p)
+                    0 -> updateProject(p, deep = false)
+                    1 -> updateProject(p, deep = true)
+                    2 -> openFile(p.bookFile)
+                    3 -> confirmDelete(p)
                 }
             }
             .show()
@@ -446,19 +454,20 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             .show()
     }
 
-    private fun updateProject(p: Project) {
+    private fun updateProject(p: Project, deep: Boolean) {
         if (ConvertBus.running) { toast("Already running."); return }
         if (p.base.isBlank()) { toast("Project has no saved URL."); return }
         val intent = Intent(this, ConvertService::class.java).apply {
             putExtra(ConvertService.EXTRA_MODE, "lj_project")
-            putExtra(ConvertService.EXTRA_AUTO, true)        // update = add all new posts
+            putExtra(ConvertService.EXTRA_AUTO, true)        // add all new posts
+            putExtra(ConvertService.EXTRA_DEEP, deep)        // full archive walk
             putExtra(ConvertService.EXTRA_BASE, p.base)
             putExtra(ConvertService.EXTRA_FROM, 1)
             putExtra(ConvertService.EXTRA_MAX, 2000)
             putExtra(ConvertService.EXTRA_CLEAN, cbClean.isChecked)
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
-        launchService(intent, "Updating ${p.name}…")
+        launchService(intent, if (deep) "Deep rescan: ${p.name}…" else "Updating ${p.name}…")
     }
 
     private fun setBusy(busy: Boolean) {

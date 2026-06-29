@@ -42,6 +42,7 @@ class ConvertService : Service() {
     companion object {
         const val EXTRA_MODE = "mode"          // "lj_project" | "lj_pages" | "list"
         const val EXTRA_AUTO = "auto"
+        const val EXTRA_DEEP = "deep"
         const val EXTRA_URLS = "urls"
         const val EXTRA_TITLES = "titles"
         const val EXTRA_BASE = "base"
@@ -124,6 +125,7 @@ class ConvertService : Service() {
         val existing = project.entries()
         val knownIds = existing.map { it.id }.toSet()
         val auto = intent.getBooleanExtra(EXTRA_AUTO, true)
+        val deep = intent.getBooleanExtra(EXTRA_DEEP, false)
         val from = intent.getIntExtra(EXTRA_FROM, 1).coerceAtLeast(1)
         val max = intent.getIntExtra(EXTRA_MAX, DEFAULT_MAX)
         val step = if (existing.isNotEmpty()) project.step
@@ -131,8 +133,30 @@ class ConvertService : Service() {
 
         val newEntries = ArrayList<PostEntry>()
 
-        if (existing.isNotEmpty()) {
-            // ---- UPDATE ----
+        if (existing.isNotEmpty() && deep) {
+            // ---- DEEP RESCAN: full archive walk to catch backdated/missed posts ----
+            ConvertBus.log("[deep] full re-scan of ${project.name} for backdated/missed posts…")
+            val scanned = scanArchive(renderer, project.base, step, from, max)
+            if (ConvertBus.cancelRequested || scanned.isEmpty()) { finish(false, null); return }
+            val titleById = HashMap<String, String>()
+            existing.forEach { titleById[it.id] = it.title }
+            val toRender = scanned.filter { Projects.idOf(it) !in knownIds }
+            ConvertBus.log("[deep] ${toRender.size} new/backdated post(s) to fetch")
+            renderPosts(renderer, project, toRender, clean, newEntries)
+            newEntries.forEach { titleById[it.id] = it.title }
+            // Rebuild the index in full archive order (places backdated posts right).
+            val finalEntries = scanned.mapNotNull { perma ->
+                val id = Projects.idOf(perma)
+                val f = project.postPdf(id)
+                if (f.exists() && f.length() > 0) {
+                    PostEntry(id, perma, titleById[id] ?: "Пост $id")
+                } else null
+            }
+            val ok = mergeProject(project, finalEntries, tree)
+            ConvertBus.log("[deep] added ${newEntries.size}, total ${finalEntries.size}")
+            finish(ok, if (ok) project.bookFile else null)
+        } else if (existing.isNotEmpty()) {
+            // ---- UPDATE (fast: only the new top of the feed) ----
             ConvertBus.log("[update] checking ${project.name} for new posts…")
             val fresh = scanNewPosts(renderer, project.base, step, from, max, knownIds)
             if (ConvertBus.cancelRequested) { finish(false, null); return }
