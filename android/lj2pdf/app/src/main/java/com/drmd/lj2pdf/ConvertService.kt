@@ -424,7 +424,7 @@ class ConvertService : Service() {
         val files = valid.map { project.postPdf(it.id) }
         val titles = valid.map { it.title }
         val ok = withContext(Dispatchers.IO) {
-            try { BookBuilder.mergeWithToc(files, titles, project.bookFile) }
+            try { BookBuilder.mergeWithToc(applicationContext, files, titles, project.bookFile) }
             catch (t: Throwable) { ConvertBus.log("[merge] error: ${t.message}"); false }
         }
         if (ok && tree != null) copyToTree(project.bookFile, tree, "${project.name}.pdf")
@@ -577,7 +577,7 @@ class ConvertService : Service() {
         nm.notify(NID, progressNotif("Merging ${pageFiles.size} page(s)…", 0, 0, true))
         val book = File(getExternalFilesDir(null), "$name.pdf")
         val ok = withContext(Dispatchers.IO) {
-            try { BookBuilder.mergeWithToc(pageFiles, outTitles, book) }
+            try { BookBuilder.mergeWithToc(applicationContext, pageFiles, outTitles, book) }
             catch (t: Throwable) { ConvertBus.log("[merge] error: ${t.message}"); false }
         }
         workDir.listFiles()?.forEach { it.delete() }
