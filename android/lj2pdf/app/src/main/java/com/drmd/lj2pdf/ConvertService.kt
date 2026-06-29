@@ -195,22 +195,41 @@ class ConvertService : Service() {
     }
 
     /**
-     * Full-archive scan via the monthly calendar (/calendar -> /YYYY/MM/ [-> day]).
-     * LiveJournal's ?skip= pagination is capped, so big blogs need the calendar
-     * to reach every post. Falls back to ?skip= if no calendar is present.
+     * Full-archive scan: probe every year page /YYYY/ to collect all month
+     * links, then crawl each month /YYYY/MM/ (descending into days if a month
+     * page is day-grouped) for post permalinks. LiveJournal's ?skip= is capped
+     * and /calendar only lists the current year, so probing years is what
+     * reaches the whole blog. Falls back to ?skip= if no months are found.
      */
     private suspend fun scanArchive(
         renderer: WebViewPdfRenderer, base: String, step: Int, from: Int, max: Int
     ): List<String> {
-        ConvertBus.log("[scan] reading archive calendar…")
-        val all = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
-            renderer.collectAllLinks("$base/calendar", SCAN_SETTLE_MS)
-        } ?: emptyList()
         val monthRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/?$")
         val dayRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/(\\d{2})/?$")
-        val months = all.filter { monthRe.matches(it) }.distinct().sortedByDescending { ym(it) }
+        val monthSet = LinkedHashSet<String>()
+
+        // 1) months listed directly on the calendar (usually only the latest year).
+        ConvertBus.log("[scan] reading archive…")
+        (withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+            renderer.collectAllLinks("$base/calendar", SCAN_SETTLE_MS)
+        } ?: emptyList()).filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
+
+        // 2) probe EVERY year page /YYYY/ to gather months across the whole blog
+        //    — /calendar alone only exposes the current year, so big blogs were
+        //    being cut off (e.g. 32 of 819 posts).
+        val curYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        for (y in curYear downTo 1999) {
+            if (ConvertBus.cancelRequested) break
+            nm.notify(NID, progressNotif(
+                "Scanning archive: year $y… (${monthSet.size} months)", 0, 0, true))
+            (withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                renderer.collectAllLinks("$base/$y/", SCAN_SETTLE_MS)
+            } ?: emptyList()).filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
+        }
+
+        val months = monthSet.distinct().sortedByDescending { ym(it) }
         if (months.isEmpty()) {
-            ConvertBus.log("[scan] no calendar — using ?skip= (may be limited for big blogs)")
+            ConvertBus.log("[scan] no archive months — using ?skip= (may be limited)")
             return scanAllPosts(renderer, base, step, from, max)
         }
         ConvertBus.log("[scan] archive has ${months.size} month(s)")
