@@ -138,9 +138,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 rowPager.visibility = View.VISIBLE
                 tilStep.visibility = View.VISIBLE
                 tilTo.visibility = View.GONE        // LJ uses scan/auto, not To
-                tilUrl.hint = "Blog URL"
-                txtHint.text = "Scan the blog, then choose how many to save — or " +
-                    "tick «automatically» to grab it all. From = start page."
+                tilUrl.hint = "Blog / site URL"
+                txtHint.text = "Platform auto-detected by URL (LiveJournal, Habr, generic). " +
+                    "Keep «Full posts» on. Scan → choose how many, or «automatically» for all."
             }
             Mode.TEMPLATE -> {
                 rowPager.visibility = View.VISIBLE

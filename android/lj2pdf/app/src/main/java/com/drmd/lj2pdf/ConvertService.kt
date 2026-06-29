@@ -126,6 +126,11 @@ class ConvertService : Service() {
         val project = Projects.forBase(this, baseIn)
         val existing = project.entries()
         val knownIds = existing.map { it.id }.toSet()
+        // Platform profile (null = built-in LiveJournal engine below).
+        val profile = Profiles.forBase(project.base)
+        val idOf: (String) -> String = { u -> profile?.idOf(u) ?: Projects.idOf(u) }
+        val note: (String) -> Unit = { s -> nm.notify(NID, progressNotif(s, 0, 0, true)) }
+        if (profile != null) ConvertBus.log("[scan] platform: ${profile.key}")
         val auto = intent.getBooleanExtra(EXTRA_AUTO, true)
         val deep = intent.getBooleanExtra(EXTRA_DEEP, false)
         val from = intent.getIntExtra(EXTRA_FROM, 1).coerceAtLeast(1)
@@ -138,17 +143,18 @@ class ConvertService : Service() {
         if (existing.isNotEmpty() && deep) {
             // ---- DEEP RESCAN: full archive walk to catch backdated/missed posts ----
             ConvertBus.log("[deep] full re-scan of ${project.name} for backdated/missed posts…")
-            val scanned = scanArchive(renderer, project.base, step, from, max)
+            val scanned = profile?.scanAll(renderer, project.base, step, from, max, note)
+                ?: scanArchive(renderer, project.base, step, from, max)
             if (ConvertBus.cancelRequested || scanned.isEmpty()) { finish(false, null); return }
             val titleById = HashMap<String, String>()
             existing.forEach { titleById[it.id] = it.title }
-            val toRender = scanned.filter { Projects.idOf(it) !in knownIds }
+            val toRender = scanned.filter { idOf(it) !in knownIds }
             ConvertBus.log("[deep] ${toRender.size} new/backdated post(s) to fetch")
-            renderPosts(renderer, project, toRender, clean, newEntries)
+            renderPosts(renderer, project, toRender, clean, newEntries, idOf)
             newEntries.forEach { titleById[it.id] = it.title }
             // Rebuild the index in full archive order (places backdated posts right).
             val finalEntries = scanned.mapNotNull { perma ->
-                val id = Projects.idOf(perma)
+                val id = idOf(perma)
                 val f = project.postPdf(id)
                 if (f.exists() && f.length() > 0) {
                     PostEntry(id, perma, titleById[id] ?: "Пост $id")
@@ -160,7 +166,8 @@ class ConvertService : Service() {
         } else if (existing.isNotEmpty()) {
             // ---- UPDATE (fast: only the new top of the feed) ----
             ConvertBus.log("[update] checking ${project.name} for new posts…")
-            val fresh = scanNewPosts(renderer, project.base, step, from, max, knownIds)
+            val fresh = profile?.scanNew(renderer, project.base, step, from, max, knownIds, note)
+                ?: scanNewPosts(renderer, project.base, step, from, max, knownIds)
             if (ConvertBus.cancelRequested) { finish(false, null); return }
             if (fresh.isEmpty()) {
                 ConvertBus.log("[update] already up to date")
@@ -169,14 +176,15 @@ class ConvertService : Service() {
                 finish(ok, project.bookFile.takeIf { it.exists() }); return
             }
             ConvertBus.log("[update] ${fresh.size} new post(s)")
-            renderPosts(renderer, project, fresh, clean, newEntries)
+            renderPosts(renderer, project, fresh, clean, newEntries, idOf)
             val merged = newEntries + existing
             val ok = mergeProject(project, merged, tree)
             ConvertBus.log("[update] added ${newEntries.size}, total ${merged.size}")
             finish(ok, if (ok) project.bookFile else null)
         } else {
             // ---- FRESH ----
-            val scanned = scanArchive(renderer, project.base, step, from, max)
+            val scanned = profile?.scanAll(renderer, project.base, step, from, max, note)
+                ?: scanArchive(renderer, project.base, step, from, max)
             if (ConvertBus.cancelRequested || scanned.isEmpty()) {
                 ConvertBus.log("[done] nothing found"); finish(false, null); return
             }
@@ -190,7 +198,7 @@ class ConvertService : Service() {
                 count = def.await().coerceIn(0, scanned.size); selection = null
                 if (count == 0 || ConvertBus.cancelRequested) { finish(false, null); return }
             }
-            renderPosts(renderer, project, scanned.take(count), clean, newEntries)
+            renderPosts(renderer, project, scanned.take(count), clean, newEntries, idOf)
             val ok = mergeProject(project, newEntries, tree)
             finish(ok, if (ok) project.bookFile else null)
         }
@@ -345,12 +353,12 @@ class ConvertService : Service() {
     /** Render each permalink to its persistent posts/<id>.pdf (skip if present). */
     private suspend fun renderPosts(
         renderer: WebViewPdfRenderer, project: Project, permalinks: List<String>,
-        clean: Boolean, out: ArrayList<PostEntry>
+        clean: Boolean, out: ArrayList<PostEntry>, idOf: (String) -> String
     ) {
         val total = permalinks.size
         for ((i, perma) in permalinks.withIndex()) {
             if (ConvertBus.cancelRequested) { ConvertBus.log("[info] cancelled"); break }
-            val id = Projects.idOf(perma)
+            val id = idOf(perma)
             val status = "Saving post ${i + 1}/$total"
             ConvertBus.progress(i, total, status)
             nm.notify(NID, progressNotif(status, i, total, false))

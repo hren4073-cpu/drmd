@@ -62,7 +62,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:checked="true"
-                    android:text="LiveJournal blog (paginated)" />
+                    android:text="Blog / site archive (LJ, Habr, … — auto)" />
 
                 <RadioButton
                     android:id="@+id/rbTemplate"
