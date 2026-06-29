@@ -61,6 +61,8 @@ object ConvertBus {
 
     fun log(line: String) {
         logText.append(line).append('\n')
+        // Keep the in-memory board small — the full log lives in files/log.txt.
+        if (logText.length > 24_000) logText.delete(0, logText.length - 16_000)
         Logx.append(line)
         observer?.onLog(line)
     }

@@ -546,6 +546,12 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     override fun onLog(line: String) {
         txtLog.append(line + "\n")
+        // Keep the on-screen board bounded so it can't bloat memory on long runs.
+        val len = txtLog.length()
+        if (len > 16_000) {
+            val t = txtLog.text
+            txtLog.text = t.subSequence(len - 12_000, len)
+        }
         scrollRoot.post { scrollRoot.fullScroll(View.FOCUS_DOWN) }
     }
 

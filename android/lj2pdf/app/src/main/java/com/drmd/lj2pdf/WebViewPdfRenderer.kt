@@ -15,6 +15,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.yield
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.coroutines.resume
@@ -201,45 +202,50 @@ class WebViewPdfRenderer(
         }
 
     /**
-     * Render the loaded page to a multi-page A4 PDF.
+     * Render the loaded page to a multi-page A4 PDF using SCROLL-AND-DRAW so
+     * memory stays tiny: the WebView is laid out only ONE page tall (software
+     * layer ≈ renderWidthPx × pageHeight × 4 ≈ 6 MB) and scrolled page by page,
+     * instead of allocating a giant full-height bitmap (which caused the
+     * OOM/ANR "app not responding" at ~27 posts).
      *
-     * The WebView is laid out at its FULL content height with a software layer,
-     * so the whole page is painted once and every A4 slice (via canvas
-     * translate) has real content. Scroll-and-draw was tried but left blank
-     * pages — an off-screen WebView doesn't repaint scrolled regions in time.
-     *
-     * Memory is bounded by capping the content height (the software-layer
-     * bitmap is renderWidthPx × height × 4 bytes); a OutOfMemoryError is caught
-     * (the post is skipped, not crashed).
+     * After each scroll we invalidate() and wait briefly so the slice repaints
+     * (this is what previously left blank pages), and yield() between pages so
+     * the main thread keeps responding. Full content is preserved.
      */
-    private fun drawToPdf(outFile: File): Boolean {
-        // ~16000 px ≈ 10 A4 pages; bitmap ≈ 1080×16000×4 ≈ 69 MB peak.
-        val maxContentPx = 16000
+    private suspend fun drawToPdf(outFile: File): Boolean {
+        val maxPages = 300
         val widthSpec = View.MeasureSpec.makeMeasureSpec(renderWidthPx, View.MeasureSpec.EXACTLY)
         val pageHeightPx = (pageHeightPt / scale).toInt().coerceAtLeast(1)
         var doc: PdfDocument? = null
         var fos: FileOutputStream? = null
         return try {
+            // Full content height (measurement only — no allocation).
             web.measure(widthSpec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-            var contentH = web.measuredHeight.coerceAtLeast(1)
-            if (contentH > maxContentPx) {
-                log("  long page truncated (${contentH}px → ${maxContentPx}px)")
-                contentH = maxContentPx
+            var fullH = web.measuredHeight.coerceAtLeast(1)
+            if (fullH > pageHeightPx * maxPages) {
+                log("  long page capped at $maxPages pages")
+                fullH = pageHeightPx * maxPages
             }
-            web.layout(0, 0, renderWidthPx, contentH)
+            val pages = ((fullH + pageHeightPx - 1) / pageHeightPx).coerceAtLeast(1)
 
-            val pages = ((contentH + pageHeightPx - 1) / pageHeightPx).coerceAtLeast(1)
+            // Lay out ONE page tall and scroll through the content.
+            web.measure(widthSpec, View.MeasureSpec.makeMeasureSpec(pageHeightPx, View.MeasureSpec.EXACTLY))
+            web.layout(0, 0, renderWidthPx, pageHeightPx)
+
             doc = PdfDocument()
             for (i in 0 until pages) {
+                web.scrollTo(0, i * pageHeightPx)
+                web.invalidate()
+                delay(60)                       // let the new slice repaint
                 val info = PdfDocument.PageInfo.Builder(pageWidthPt, pageHeightPt, i + 1).create()
                 val page = doc.startPage(info)
                 val c = page.canvas
                 c.save()
                 c.scale(scale, scale)
-                c.translate(0f, (-i * pageHeightPx).toFloat())
-                web.draw(c)
+                web.draw(c)                     // current viewport slice
                 c.restore()
                 doc.finishPage(page)
+                yield()                         // keep the UI/main thread alive
             }
             fos = FileOutputStream(outFile)
             doc.writeTo(fos)
@@ -250,6 +256,7 @@ class WebViewPdfRenderer(
         } finally {
             try { fos?.close() } catch (_: Throwable) {}
             try { doc?.close() } catch (_: Throwable) {}
+            try { web.scrollTo(0, 0) } catch (_: Throwable) {}
         }
     }
 
