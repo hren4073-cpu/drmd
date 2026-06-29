@@ -1,7 +1,9 @@
 package com.drmd.lj2pdf
 
+import android.content.Context
 import android.graphics.pdf.PdfDocument
 import android.view.View
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -17,55 +19,70 @@ import kotlin.coroutines.resume
  * Renders web pages to PDF by drawing an offscreen [WebView] onto a
  * [PdfDocument] canvas — no Chrome, no PrintDocumentAdapter.
  *
- * Blog-archiving extras:
- *  - SCAN: [collectPostLinks] returns the post permalinks on a list page so the
- *    caller can enumerate a whole blog before downloading.
- *  - CLEAN: optional in-page ad/promo/banner stripping via injected JS.
- *  - media is preserved because the WebView loads images before drawing.
+ * The renderer OWNS its WebView and recreates it if the WebView's renderer
+ * process dies ([WebViewClient.onRenderProcessGone]) — otherwise Android kills
+ * the whole app, which was crashing long scans of media-heavy blogs.
  *
- * All WebView work must run on the main thread.
+ * All methods must run on the main thread.
  */
 class WebViewPdfRenderer(
-    private val web: WebView,
+    private val ctx: Context,
     private val log: (String) -> Unit
 ) {
     data class RenderResult(
         val ok: Boolean, val signature: String, val count: Int, val title: String
     )
 
-    private val pageWidthPt = 595          // A4 @72dpi
+    private val pageWidthPt = 595
     private val pageHeightPt = 842
     private val renderWidthPx = 1080
     private val scale = pageWidthPt.toFloat() / renderWidthPx
 
-    init {
-        web.settings.apply {
+    @Volatile private var dead = false
+    private var web: WebView = newWeb()
+
+    private fun newWeb(): WebView {
+        val w = WebView(ctx)
+        w.settings.apply {
             javaScriptEnabled = true
             loadWithOverviewMode = true
             useWideViewPort = true
             domStorageEnabled = true
+            blockNetworkImage = false
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
-        web.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+        w.setLayerType(View.LAYER_TYPE_SOFTWARE, null)   // draw() needs software layer
+        return w
+    }
+
+    /** Recreate the WebView if its renderer process died. */
+    private fun ensureAlive() {
+        if (dead) {
+            try { web.destroy() } catch (_: Throwable) {}
+            web = newWeb()
+            dead = false
+            log("  (webview recreated after renderer crash)")
+        }
+    }
+
+    fun destroy() {
+        try { web.destroy() } catch (_: Throwable) {}
     }
 
     /** Load a list page and return its distinct post permalinks (in order). */
     suspend fun collectPostLinks(url: String, settleMs: Long): List<String> {
+        ensureAlive()
         if (!loadPage(url)) return emptyList()
         delay(settleMs)
         val raw = jsUnquote(evalJs(LINKS_JS))
         return raw.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
     }
 
-    /**
-     * Load [url], optionally clean it, then draw it to [outFile].
-     * When [requireEntries] is set, an empty list page returns ok=false/count=0
-     * so the caller can stop walking the blog.
-     */
     suspend fun render(
         url: String, outFile: File, settleMs: Long,
         clean: Boolean, requireEntries: Boolean
     ): RenderResult {
+        ensureAlive()
         if (!loadPage(url)) return RenderResult(false, "", -1, "")
         delay(settleMs)
         if (clean) { evalJs(CLEAN_JS); delay(250) }
@@ -79,7 +96,6 @@ class WebViewPdfRenderer(
         return RenderResult(ok, signature, count, title)
     }
 
-    /** Simple variant for single page / template modes. */
     suspend fun renderUrlToPdf(url: String, outFile: File, settleMs: Long, clean: Boolean): Boolean =
         render(url, outFile, settleMs, clean, requireEntries = false).ok
 
@@ -98,8 +114,21 @@ class WebViewPdfRenderer(
                         if (cont.isActive) cont.resume(false)
                     }
                 }
+                override fun onRenderProcessGone(
+                    view: WebView?, detail: RenderProcessGoneDetail?
+                ): Boolean {
+                    // The WebView's renderer died; recover instead of crashing.
+                    dead = true
+                    log("  webview renderer gone — recovering")
+                    if (!settled) { settled = true; if (cont.isActive) cont.resume(false) }
+                    return true
+                }
             }
-            web.loadUrl(url)
+            try {
+                web.loadUrl(url)
+            } catch (t: Throwable) {
+                if (cont.isActive) cont.resume(false)
+            }
         }
 
     private suspend fun evalJs(script: String): String =
@@ -146,7 +175,6 @@ class WebViewPdfRenderer(
         }
     }
 
-    /** Minimal JSON string unescape for evaluateJavascript() results. */
     private fun jsUnquote(value: String): String {
         var s = value.trim()
         if (s.length >= 2 && s.startsWith("\"") && s.endsWith("\"")) s = s.substring(1, s.length - 1)

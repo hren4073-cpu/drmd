@@ -11,7 +11,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.webkit.WebView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
@@ -67,7 +66,7 @@ class ConvertService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private lateinit var nm: NotificationManager
-    private var web: WebView? = null
+    private var renderer: WebViewPdfRenderer? = null
     private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
     @Volatile private var selection: CompletableDeferred<Int>? = null
@@ -97,14 +96,14 @@ class ConvertService : Service() {
         acquireWakeLock()
         ConvertBus.start(0)
         startForeground(NID, progressNotif("Starting…", 0, 0, true))
-        web = WebView(this)
 
         scope.launch {
             try {
-                val renderer = WebViewPdfRenderer(web!!) { line -> ConvertBus.log(line) }
+                val r = WebViewPdfRenderer(this@ConvertService) { line -> ConvertBus.log(line) }
+                renderer = r
                 when (mode) {
-                    "lj_project" -> runProject(renderer, intent, clean, tree)
-                    else -> runSimple(renderer, intent, mode, auto, clean, name, tree)
+                    "lj_project" -> runProject(r, intent, clean, tree)
+                    else -> runSimple(r, intent, mode, auto, clean, name, tree)
                 }
             } catch (t: Throwable) {
                 ConvertBus.log("[error] ${t.message}")
@@ -355,7 +354,7 @@ class ConvertService : Service() {
 
     private fun finish(ok: Boolean, book: File?) {
         running = false
-        web?.destroy(); web = null
+        renderer?.destroy(); renderer = null
         releaseWakeLock()
         stopForeground(true)
         nm.notify(NID + 1, if (ok && book != null) doneNotif(book) else failedNotif())
@@ -447,7 +446,7 @@ class ConvertService : Service() {
 
     override fun onDestroy() {
         releaseWakeLock()
-        web?.destroy(); web = null
+        renderer?.destroy(); renderer = null
         super.onDestroy()
     }
 }

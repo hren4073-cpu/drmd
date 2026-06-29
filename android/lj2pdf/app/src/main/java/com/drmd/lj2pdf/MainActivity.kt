@@ -97,6 +97,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
         treeUri = prefs.getString("tree", null)
         updateOutLabel()
+        showLastCrashIfAny()
 
         rgMode.setOnCheckedChangeListener { _, _ -> applyMode() }
         applyMode()
@@ -294,6 +295,27 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             } catch (_: Throwable) { null }
             "Output folder: ${name ?: t}"
         }
+    }
+
+    /** If the app crashed last time, show the captured stack trace to share. */
+    private fun showLastCrashIfAny() {
+        val f = File(filesDir, "crash.txt")
+        if (!f.exists()) return
+        val text = try { f.readText() } catch (_: Throwable) { "" }
+        f.delete()
+        if (text.isBlank()) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Last crash report")
+            .setMessage(text.take(4000))
+            .setPositiveButton("Copy") { _, _ ->
+                try {
+                    val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", text))
+                    toast("Copied — paste it to the developer")
+                } catch (_: Throwable) {}
+            }
+            .setNegativeButton("Dismiss", null)
+            .show()
     }
 
     private fun openBook() = openFile(ConvertBus.lastBook)
