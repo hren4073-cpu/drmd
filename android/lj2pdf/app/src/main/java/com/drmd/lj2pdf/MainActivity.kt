@@ -69,6 +69,18 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private val askNotif =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* proceed anyway */ }
 
+    private val pickTgFolder =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (_: Throwable) {}
+                startTgRag(uri.toString())
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -118,6 +130,10 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         btnOpen.setOnClickListener { openBook() }
         findViewById<MaterialButton>(R.id.btnProjects).setOnClickListener { showProjectsDialog() }
         findViewById<MaterialButton>(R.id.btnLog).setOnClickListener { showLogDialog() }
+        findViewById<MaterialButton>(R.id.btnTg).setOnClickListener {
+            toast("Pick a Telegram export folder (with messages*.html or result.json)")
+            try { pickTgFolder.launch(null) } catch (t: Throwable) { toast("No folder picker.") }
+        }
     }
 
     private enum class Mode { LJ, TEMPLATE, SINGLE }
@@ -462,6 +478,18 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 }
             }
             .show()
+    }
+
+    /** Build a RAG corpus from a Telegram Desktop export folder. */
+    private fun startTgRag(tgUri: String) {
+        if (ConvertBus.running) { toast("Already running."); return }
+        val intent = Intent(this, ConvertService::class.java).apply {
+            putExtra(ConvertService.EXTRA_MODE, "tg_rag")
+            putExtra(ConvertService.EXTRA_NAME, "telegram_rag")
+            putExtra(ConvertService.EXTRA_TG_TREE, tgUri)
+            this@MainActivity.treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
+        }
+        launchService(intent, "Telegram → RAG…")
     }
 
     /** Build a RAG (vector-DB) corpus JSONL from one or more projects. */

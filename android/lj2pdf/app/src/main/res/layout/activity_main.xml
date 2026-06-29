@@ -28,6 +28,13 @@
                 android:textAppearance="?attr/textAppearanceHeadlineSmall" />
 
             <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnTg"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="TG→RAG" />
+
+            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnLog"
                 style="@style/Widget.Material3.Button.TextButton"
                 android:layout_width="wrap_content"

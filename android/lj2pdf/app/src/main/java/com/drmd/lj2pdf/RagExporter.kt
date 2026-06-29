@@ -68,7 +68,7 @@ object RagExporter {
         }
 
     /** Split into ~[size]-char chunks on whitespace, overlapping by [overlap]. */
-    private fun chunk(raw: String, size: Int, overlap: Int): List<String> {
+    fun chunk(raw: String, size: Int, overlap: Int): List<String> {
         val text = raw.replace(Regex("[ \\t\\x0B\\f\\r]+"), " ")
             .replace(Regex("\n{3,}"), "\n\n").trim()
         if (text.isEmpty()) return emptyList()

@@ -54,6 +54,7 @@ class ConvertService : Service() {
         const val EXTRA_TREE = "tree"
         const val EXTRA_SELECT_COUNT = "selectCount"
         const val EXTRA_RAG_DIRS = "ragDirs"   // ArrayList<String> of project dirs
+        const val EXTRA_TG_TREE = "tgTree"     // SAF tree of a Telegram export
         private const val RAG_CHUNK = 1000
         private const val RAG_OVERLAP = 150
         const val ACTION_STOP = "com.drmd.lj2pdf.STOP"
@@ -104,6 +105,7 @@ class ConvertService : Service() {
         scope.launch {
             try {
                 if (mode == "rag") { runRag(intent, name, tree); return@launch }
+                if (mode == "tg_rag") { runTgRag(intent, name, tree); return@launch }
                 val r = WebViewPdfRenderer(this@ConvertService) { line -> ConvertBus.log(line) }
                 renderer = r
                 when (mode) {
@@ -422,6 +424,24 @@ class ConvertService : Service() {
             } catch (t: Throwable) { ConvertBus.log("[rag] error: ${t.message}"); -1 }
         }
         if (docs <= 0) { finishRag(false, null); return }
+        if (tree != null) copyToTree(out, tree, "$name.jsonl", "application/json")
+        finishRag(true, out)
+    }
+
+    private suspend fun runTgRag(intent: Intent, name: String, tree: String?) {
+        val tg = intent.getStringExtra(EXTRA_TG_TREE) ?: ""
+        if (tg.isEmpty()) { finishRag(false, null); return }
+        ConvertBus.log("[tg] reading Telegram export…")
+        val out = File(getExternalFilesDir(null), "$name.jsonl")
+        val n = withContext(Dispatchers.IO) {
+            try {
+                TelegramImporter.export(applicationContext, tg, out, RAG_CHUNK, RAG_OVERLAP) { d, t, s ->
+                    ConvertBus.progress(d, t, s)
+                    nm.notify(NID, progressNotif(s, d, t, t == 0))
+                }
+            } catch (t: Throwable) { ConvertBus.log("[tg] error: ${t.message}"); -1 }
+        }
+        if (n <= 0) { finishRag(false, null); return }
         if (tree != null) copyToTree(out, tree, "$name.jsonl", "application/json")
         finishRag(true, out)
     }
