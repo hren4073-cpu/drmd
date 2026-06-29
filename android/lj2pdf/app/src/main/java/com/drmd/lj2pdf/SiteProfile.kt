@@ -41,7 +41,10 @@ object Profiles {
         return when {
             host.contains("livejournal.com") -> null          // built-in LJ engine
             host.contains("habr.com") || host.contains("habrahabr") -> HabrProfile
-            // future: dtf.ru / tjournal.ru (osnova API), phpBB/XenForo forums…
+            // TODO osnova: dtf.ru / tjournal.ru share one engine — enumerate via
+            //   their API (api.dtf.ru / api.tjournal) instead of the generic crawl.
+            // TODO sefaria.org: structure + bilingual text via api.sefaria.org;
+            //   lay a translator hook here (he/aramaic → en) for RAG.
             else -> GenericProfile
         }
     }
@@ -59,24 +62,32 @@ object GenericProfile : SiteProfile {
         return "g" + Integer.toHexString(u.hashCode() and 0x7fffffff)
     }
 
+    private val pageNumRe = Regex("(?:[?&]page=|[?&]p=|/page/)(\\d+)")
+
     override suspend fun scanAll(
         r: WebViewPdfRenderer, base: String, step: Int, from: Int, max: Int,
         note: (String) -> Unit
     ): List<String> {
-        note("Scanning $base…")
-        ConvertBus.log("[generic] collecting links from the page…")
-        val all = withTimeoutOrNull(P_TIMEOUT_MS) { r.collectAllLinks(base, P_SETTLE_MS) } ?: emptyList()
+        // Auto structure detection: collect content links from the page, then
+        // FOLLOW pagination (?page=N, ?p=N, /page/N) to the next page until it
+        // runs out — covers forum threads / index pages and paginated TOCs.
         val baseTrim = base.trimEnd('/')
-        val items = all.filter { u ->
-            val path = Uri.parse(u).path ?: ""
-            path.length > 1 &&
-                u.trimEnd('/') != baseTrim &&
-                !u.contains("/login") && !u.contains("/search") &&
-                !u.contains("/tag/") && !u.contains("/register") &&
-                !u.contains("mailto:")
-        }.distinct().take(max)
-        val list = if (items.isEmpty()) listOf(base) else items
-        ConvertBus.log("[generic] ${list.size} item(s)")
+        val items = LinkedHashSet<String>()
+        val seenPages = HashSet<String>()
+        var pageUrl: String? = base
+        var visited = 0
+        while (pageUrl != null && visited < 300 && items.size < max && !ConvertBus.cancelRequested) {
+            if (!seenPages.add(pageUrl)) break
+            visited++
+            note("Scanning page $visited (${items.size} items)…")
+            val all = withTimeoutOrNull(P_TIMEOUT_MS) { r.collectAllLinks(pageUrl!!, P_SETTLE_MS) }
+                ?: emptyList()
+            all.filter { isContent(it, baseTrim) }.forEach { items.add(it) }
+            ConvertBus.scanProgress(visited, items.size)
+            pageUrl = nextPage(all, pageUrl!!)
+        }
+        val list = if (items.isEmpty()) listOf(base) else items.toList().take(max)
+        ConvertBus.log("[generic] ${list.size} item(s) over $visited page(s)")
         return list
     }
 
@@ -84,6 +95,25 @@ object GenericProfile : SiteProfile {
         r: WebViewPdfRenderer, base: String, step: Int, from: Int, max: Int,
         knownIds: Set<String>, note: (String) -> Unit
     ): List<String> = scanAll(r, base, step, from, max, note).filter { idOf(it) !in knownIds }
+
+    private fun nextPage(links: List<String>, current: String): String? {
+        val cur = pageNumRe.find(current)?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        val want = (cur + 1).toString()
+        return links.firstOrNull { pageNumRe.find(it)?.groupValues?.get(1) == want }
+    }
+
+    private fun isContent(u: String, baseTrim: String): Boolean {
+        val low = u.lowercase()
+        val path = Uri.parse(u).path ?: ""
+        if (path.length <= 1) return false
+        if (u.trimEnd('/') == baseTrim) return false
+        if (pageNumRe.containsMatchIn(u)) return false           // a pagination link, not content
+        val bad = listOf(
+            "/login", "/signup", "/register", "/search", "/tag/", "/tags/",
+            "mailto:", "/about", "/privacy", "/terms", "/feed", "/rss"
+        )
+        return bad.none { low.contains(it) }
+    }
 }
 
 /**

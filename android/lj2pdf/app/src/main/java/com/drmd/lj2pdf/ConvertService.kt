@@ -55,6 +55,9 @@ class ConvertService : Service() {
         const val EXTRA_SELECT_COUNT = "selectCount"
         const val EXTRA_RAG_DIRS = "ragDirs"   // ArrayList<String> of project dirs
         const val EXTRA_TG_TREE = "tgTree"     // SAF tree of a Telegram export
+        const val EXTRA_RAG_CHUNK = "ragChunk"
+        const val EXTRA_RAG_OVERLAP = "ragOverlap"
+        const val EXTRA_AUTO_RAG = "autoRag"   // also export RAG right after archiving
         private const val RAG_CHUNK = 1000
         private const val RAG_OVERLAP = 150
         const val ACTION_STOP = "com.drmd.lj2pdf.STOP"
@@ -143,6 +146,9 @@ class ConvertService : Service() {
         val max = intent.getIntExtra(EXTRA_MAX, DEFAULT_MAX)
         val step = if (existing.isNotEmpty()) project.step
                    else intent.getIntExtra(EXTRA_STEP, 20).coerceAtLeast(1).also { project.step = it }
+        val autoRag = intent.getBooleanExtra(EXTRA_AUTO_RAG, false)
+        val ragChunk = intent.getIntExtra(EXTRA_RAG_CHUNK, RAG_CHUNK)
+        val ragOverlap = intent.getIntExtra(EXTRA_RAG_OVERLAP, RAG_OVERLAP)
 
         val newEntries = ArrayList<PostEntry>()
 
@@ -168,6 +174,7 @@ class ConvertService : Service() {
             }
             val ok = mergeProject(project, finalEntries, tree)
             ConvertBus.log("[deep] added ${newEntries.size}, total ${finalEntries.size}")
+            if (ok && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
             finish(ok, if (ok) project.bookFile else null)
         } else if (existing.isNotEmpty()) {
             // ---- UPDATE (fast: only the new top of the feed) ----
@@ -186,6 +193,7 @@ class ConvertService : Service() {
             val merged = newEntries + existing
             val ok = mergeProject(project, merged, tree)
             ConvertBus.log("[update] added ${newEntries.size}, total ${merged.size}")
+            if (ok && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
             finish(ok, if (ok) project.bookFile else null)
         } else {
             // ---- FRESH ----
@@ -206,8 +214,26 @@ class ConvertService : Service() {
             }
             renderPosts(renderer, project, scanned.take(count), clean, newEntries, idOf)
             val ok = mergeProject(project, newEntries, tree)
+            if (ok && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
             finish(ok, if (ok) project.bookFile else null)
         }
+    }
+
+    /** Auto-export a RAG corpus for a project right after archiving. */
+    private suspend fun exportProjectRag(
+        project: Project, chunk: Int, overlap: Int, tree: String?
+    ) {
+        ConvertBus.log("[rag] auto-export for ${project.name}…")
+        val out = File(getExternalFilesDir(null), "${project.name}_rag.jsonl")
+        val n = withContext(Dispatchers.IO) {
+            try {
+                RagExporter.export(listOf(project), out, chunk, overlap) { d, t, s ->
+                    ConvertBus.progress(d, t, s)
+                    nm.notify(NID, progressNotif(s, d, t, t == 0))
+                }
+            } catch (t: Throwable) { ConvertBus.log("[rag] ${t.message}"); 0 }
+        }
+        if (n > 0 && tree != null) copyToTree(out, tree, "${project.name}_rag.jsonl", "application/json")
     }
 
     /** Walk the whole blog, collecting every post permalink (newest first). */
@@ -414,10 +440,12 @@ class ConvertService : Service() {
             ConvertBus.log("[rag] no projects with saved posts"); finishRag(false, null); return
         }
         ConvertBus.log("[rag] building corpus from ${projects.size} project(s)…")
+        val chunk = intent.getIntExtra(EXTRA_RAG_CHUNK, RAG_CHUNK)
+        val overlap = intent.getIntExtra(EXTRA_RAG_OVERLAP, RAG_OVERLAP)
         val out = File(getExternalFilesDir(null), "$name.jsonl")
         val docs = withContext(Dispatchers.IO) {
             try {
-                RagExporter.export(projects, out, RAG_CHUNK, RAG_OVERLAP) { d, t, s ->
+                RagExporter.export(projects, out, chunk, overlap) { d, t, s ->
                     ConvertBus.progress(d, t, s)
                     nm.notify(NID, progressNotif(s, d, t, t == 0))
                 }
@@ -432,10 +460,12 @@ class ConvertService : Service() {
         val tg = intent.getStringExtra(EXTRA_TG_TREE) ?: ""
         if (tg.isEmpty()) { finishRag(false, null); return }
         ConvertBus.log("[tg] reading Telegram export…")
+        val chunk = intent.getIntExtra(EXTRA_RAG_CHUNK, RAG_CHUNK)
+        val overlap = intent.getIntExtra(EXTRA_RAG_OVERLAP, RAG_OVERLAP)
         val out = File(getExternalFilesDir(null), "$name.jsonl")
         val n = withContext(Dispatchers.IO) {
             try {
-                TelegramImporter.export(applicationContext, tg, out, RAG_CHUNK, RAG_OVERLAP) { d, t, s ->
+                TelegramImporter.export(applicationContext, tg, out, chunk, overlap) { d, t, s ->
                     ConvertBus.progress(d, t, s)
                     nm.notify(NID, progressNotif(s, d, t, t == 0))
                 }

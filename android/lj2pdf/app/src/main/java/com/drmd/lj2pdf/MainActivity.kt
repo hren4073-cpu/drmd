@@ -134,6 +134,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             toast("Pick a Telegram export folder (with messages*.html or result.json)")
             try { pickTgFolder.launch(null) } catch (t: Throwable) { toast("No folder picker.") }
         }
+        findViewById<MaterialButton>(R.id.btnMore).setOnClickListener { showMore(it) }
     }
 
     private enum class Mode { LJ, TEMPLATE, SINGLE }
@@ -224,6 +225,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             }
         }
 
+        intent.withRag(true)
         launchService(intent, "Starting…")
     }
 
@@ -480,6 +482,88 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             .show()
     }
 
+    // -- settings (the "⋮" menu) ------------------------------------------
+
+    private fun ragChunk() = prefs.getInt("rag_chunk", 1000).coerceIn(200, 8000)
+    private fun ragOverlap() = prefs.getInt("rag_overlap", 150).coerceIn(0, 2000)
+    private fun autoRag() = prefs.getBoolean("auto_rag", false)
+
+    /** Add RAG extras to a service intent so the job uses the user's settings. */
+    private fun Intent.withRag(includeAuto: Boolean): Intent {
+        putExtra(ConvertService.EXTRA_RAG_CHUNK, ragChunk())
+        putExtra(ConvertService.EXTRA_RAG_OVERLAP, ragOverlap())
+        if (includeAuto) putExtra(ConvertService.EXTRA_AUTO_RAG, autoRag())
+        return this
+    }
+
+    private fun showMore(anchor: View) {
+        val pm = android.widget.PopupMenu(this, anchor)
+        pm.menu.add(0, 1, 0, "RAG settings (chunk / overlap)")
+        pm.menu.add(0, 2, 0, "Auto-RAG after archive").apply {
+            isCheckable = true; isChecked = autoRag()
+        }
+        pm.menu.add(0, 3, 0, "About / roadmap")
+        pm.setOnMenuItemClickListener { mi ->
+            when (mi.itemId) {
+                1 -> { ragSettingsDialog(); true }
+                2 -> {
+                    prefs.edit().putBoolean("auto_rag", !autoRag()).apply()
+                    toast("Auto-RAG after archive: ${if (autoRag()) "on" else "off"}")
+                    true
+                }
+                3 -> { showAbout(); true }
+                else -> false
+            }
+        }
+        pm.show()
+    }
+
+    private fun ragSettingsDialog() {
+        if (!alive()) return
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+        fun field(label: String, value: Int): android.widget.EditText {
+            box.addView(android.widget.TextView(this).apply { text = label })
+            return android.widget.EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setText(value.toString())
+            }.also { box.addView(it) }
+        }
+        val chunk = field("Chunk size (characters)", ragChunk())
+        val ov = field("Overlap (characters)", ragOverlap())
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("RAG settings")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit()
+                    .putInt("rag_chunk", chunk.text.toString().toIntOrNull() ?: 1000)
+                    .putInt("rag_overlap", ov.text.toString().toIntOrNull() ?: 150)
+                    .apply()
+                toast("Saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showAbout() {
+        if (!alive()) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("About")
+            .setMessage(
+                "Blog/site → PDF + RAG archiver.\n\n" +
+                "Platforms auto-detected: LiveJournal, Habr, generic sites (TOC/" +
+                "forums with pagination). RAG export builds a JSONL corpus for " +
+                "local LLMs; «Auto-RAG» also makes it right after archiving.\n\n" +
+                "Roadmap: DTF/TJournal (osnova API), smarter forum structure, " +
+                "Sefaria + translator hook."
+            )
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
     /** Build a RAG corpus from a Telegram Desktop export folder. */
     private fun startTgRag(tgUri: String) {
         if (ConvertBus.running) { toast("Already running."); return }
@@ -489,6 +573,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_TG_TREE, tgUri)
             this@MainActivity.treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
+        intent.withRag(false)
         launchService(intent, "Telegram → RAG…")
     }
 
@@ -506,6 +591,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             )
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
+        intent.withRag(false)
         launchService(intent, "RAG: $name…")
     }
 
@@ -531,6 +617,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_CLEAN, cbClean.isChecked)
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
+        intent.withRag(true)
         launchService(intent, if (deep) "Deep rescan: ${p.name}…" else "Updating ${p.name}…")
     }
 
