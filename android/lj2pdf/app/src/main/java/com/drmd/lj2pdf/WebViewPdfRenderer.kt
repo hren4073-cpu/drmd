@@ -39,6 +39,8 @@ class WebViewPdfRenderer(
     private val scale = pageWidthPt.toFloat() / renderWidthPx
 
     @Volatile private var dead = false
+    private var loads = 0
+    private val recreateEvery = 20      // refresh the WebView to bound memory
     private var web: WebView = newWeb()
 
     private fun newWeb(): WebView {
@@ -55,13 +57,13 @@ class WebViewPdfRenderer(
         return w
     }
 
-    /** Recreate the WebView if its renderer process died. */
+    /** Recreate the WebView if it died, or periodically to bound memory. */
     private fun ensureAlive() {
-        if (dead) {
+        if (dead || loads >= recreateEvery) {
             try { web.destroy() } catch (_: Throwable) {}
             web = newWeb()
             dead = false
-            log("  (webview recreated after renderer crash)")
+            loads = 0
         }
     }
 
@@ -73,8 +75,19 @@ class WebViewPdfRenderer(
     suspend fun collectPostLinks(url: String, settleMs: Long): List<String> {
         ensureAlive()
         if (!loadPage(url)) return emptyList()
+        loads++
         delay(settleMs)
         val raw = jsUnquote(evalJs(LINKS_JS))
+        return raw.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    /** Load a page and return all same-host links (for the calendar/archive). */
+    suspend fun collectAllLinks(url: String, settleMs: Long): List<String> {
+        ensureAlive()
+        if (!loadPage(url)) return emptyList()
+        loads++
+        delay(settleMs)
+        val raw = jsUnquote(evalJs(ALL_LINKS_JS))
         return raw.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
     }
 
@@ -84,6 +97,7 @@ class WebViewPdfRenderer(
     ): RenderResult {
         ensureAlive()
         if (!loadPage(url)) return RenderResult(false, "", -1, "")
+        loads++
         delay(settleMs)
         if (clean) { evalJs(CLEAN_JS); delay(250) }
 
@@ -236,6 +250,22 @@ class WebViewPdfRenderer(
       if(m && m[1].indexOf(host)!==-1) seen[m[2]]=1;
     }
     return Object.keys(seen).sort().join(',');
+  }catch(e){ return ''; }
+})();
+"""
+
+        private const val ALL_LINKS_JS = """
+(function(){
+  try{
+    var host=location.host, a=document.querySelectorAll('a[href]'), out=[], seen={};
+    for(var i=0;i<a.length;i++){
+      var h=a[i].href||'';
+      if(h.indexOf('://')<0) continue;
+      var hh=(h.split('/')[2]||'');
+      if(hh.indexOf(host)<0) continue;
+      if(!seen[h]){ seen[h]=1; out.push(h); }
+    }
+    return out.join('\n');
   }catch(e){ return ''; }
 })();
 """

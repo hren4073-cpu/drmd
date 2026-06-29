@@ -150,7 +150,7 @@ class ConvertService : Service() {
             finish(ok, if (ok) project.bookFile else null)
         } else {
             // ---- FRESH ----
-            val scanned = scanAllPosts(renderer, project.base, step, from, max)
+            val scanned = scanArchive(renderer, project.base, step, from, max)
             if (ConvertBus.cancelRequested || scanned.isEmpty()) {
                 ConvertBus.log("[done] nothing found"); finish(false, null); return
             }
@@ -192,6 +192,68 @@ class ConvertService : Service() {
             page++
         }
         return out
+    }
+
+    /**
+     * Full-archive scan via the monthly calendar (/calendar -> /YYYY/MM/ [-> day]).
+     * LiveJournal's ?skip= pagination is capped, so big blogs need the calendar
+     * to reach every post. Falls back to ?skip= if no calendar is present.
+     */
+    private suspend fun scanArchive(
+        renderer: WebViewPdfRenderer, base: String, step: Int, from: Int, max: Int
+    ): List<String> {
+        ConvertBus.log("[scan] reading archive calendar…")
+        val all = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+            renderer.collectAllLinks("$base/calendar", SCAN_SETTLE_MS)
+        } ?: emptyList()
+        val monthRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/?$")
+        val dayRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/(\\d{2})/?$")
+        val months = all.filter { monthRe.matches(it) }.distinct().sortedByDescending { ym(it) }
+        if (months.isEmpty()) {
+            ConvertBus.log("[scan] no calendar — using ?skip= (may be limited for big blogs)")
+            return scanAllPosts(renderer, base, step, from, max)
+        }
+        ConvertBus.log("[scan] archive has ${months.size} month(s)")
+        val out = ArrayList<String>(); val seen = HashSet<String>()
+        var done = 0
+        for (m in months) {
+            if (ConvertBus.cancelRequested) break
+            done++
+            nm.notify(NID, progressNotif(
+                "Scanning archive $done/${months.size}… (${out.size} posts)", done, months.size, false))
+            val posts = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                renderer.collectPostLinks(m, SCAN_SETTLE_MS)
+            } ?: emptyList()
+            if (posts.isEmpty()) {
+                // Month page is day-grouped — descend into each day.
+                val days = (withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                    renderer.collectAllLinks(m, SCAN_SETTLE_MS)
+                } ?: emptyList()).filter { dayRe.matches(it) }.distinct().sortedByDescending { ymd(it) }
+                for (d in days) {
+                    if (ConvertBus.cancelRequested) break
+                    val dp = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+                        renderer.collectPostLinks(d, SCAN_SETTLE_MS)
+                    } ?: emptyList()
+                    for (l in dp) if (seen.add(l)) out.add(l)
+                }
+            } else {
+                for (l in posts) if (seen.add(l)) out.add(l)
+            }
+            ConvertBus.scanProgress(done, out.size)
+        }
+        ConvertBus.log("[scan] archive total: ${out.size} post(s)")
+        return out
+    }
+
+    private fun ym(url: String): Int {
+        val m = Regex("/(\\d{4})/(\\d{2})").find(url) ?: return 0
+        return m.groupValues[1].toInt() * 100 + m.groupValues[2].toInt()
+    }
+
+    private fun ymd(url: String): Int {
+        val m = Regex("/(\\d{4})/(\\d{2})/(\\d{2})").find(url) ?: return 0
+        return (m.groupValues[1].toInt() * 100 + m.groupValues[2].toInt()) * 100 +
+            m.groupValues[3].toInt()
     }
 
     /** Walk only the top of the blog until an already-archived post is met. */
