@@ -117,6 +117,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         }
         btnOpen.setOnClickListener { openBook() }
         findViewById<MaterialButton>(R.id.btnProjects).setOnClickListener { showProjectsDialog() }
+        findViewById<MaterialButton>(R.id.btnLog).setOnClickListener { showLogDialog() }
     }
 
     private enum class Mode { LJ, TEMPLATE, SINGLE }
@@ -273,6 +274,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     /** After a scan, let the user pick how much of the blog to save. */
     private fun showSelectionDialog(total: Int) {
+        if (!alive()) return
         if (total <= 0) return
         val half = (total + 1) / 2
         val third = (total + 2) / 3
@@ -335,8 +337,41 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         }
     }
 
+    /** View / share / clear the persistent bug log. */
+    private fun showLogDialog() {
+        if (!alive()) return
+        val text = Logx.read().ifBlank { "(log is empty)" }
+        // show the tail (most recent) so big logs stay readable
+        val tail = if (text.length > 8000) "…\n" + text.takeLast(8000) else text
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Bug log")
+            .setMessage(tail)
+            .setPositiveButton("Share") { _, _ -> shareText(Logx.read()) }
+            .setNeutralButton("Clear") { _, _ -> Logx.clear(); toast("Log cleared") }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun shareText(text: String) {
+        try {
+            val i = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "lj2pdf log")
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            startActivity(Intent.createChooser(i, "Share log"))
+        } catch (_: Throwable) {
+            try {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("log", text))
+                toast("Copied to clipboard")
+            } catch (_: Throwable) {}
+        }
+    }
+
     /** If the app crashed last time, show the captured stack trace to share. */
     private fun showLastCrashIfAny() {
+        if (!alive()) return
         val f = File(filesDir, "crash.txt")
         if (!f.exists()) return
         val text = try { f.readText() } catch (_: Throwable) { "" }
@@ -375,6 +410,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     // -- projects (saved blogs, incremental update) -----------------------
 
     private fun showProjectsDialog() {
+        if (!alive()) return
         val projects = Projects.list(this)
         if (projects.isEmpty()) {
             toast("No projects yet — archive a blog first (LiveJournal + Full posts).")
@@ -437,6 +473,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+
+    /** Safe to show a dialog only while the activity window is valid. */
+    private fun alive(): Boolean = !isFinishing && !isDestroyed
 
     // -- observe the service ----------------------------------------------
 

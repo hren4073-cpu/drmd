@@ -12,14 +12,15 @@ import java.io.StringWriter
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
+        Logx.init(File(filesDir, "log.txt"))
+        Logx.append("[app] started")
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
             try {
                 val sw = StringWriter()
                 ex.printStackTrace(PrintWriter(sw))
-                File(filesDir, "crash.txt").writeText(
-                    "thread: ${thread.name}\n\n$sw"
-                )
+                File(filesDir, "crash.txt").writeText("thread: ${thread.name}\n\n$sw")
+                Logx.append("[CRASH] ${thread.name}: $sw")
             } catch (_: Throwable) { /* ignore */ }
             prev?.uncaughtException(thread, ex)
         }

@@ -38,6 +38,8 @@ object ConvertBus {
         awaitingSelection = false
         logText.setLength(0)
         lastStatus = "Starting…"
+        Logx.rotate()
+        Logx.append("[run] started, mode parsed")
     }
 
     fun scanProgress(pages: Int, found: Int) {
@@ -59,6 +61,7 @@ object ConvertBus {
 
     fun log(line: String) {
         logText.append(line).append('\n')
+        Logx.append(line)
         observer?.onLog(line)
     }
 
