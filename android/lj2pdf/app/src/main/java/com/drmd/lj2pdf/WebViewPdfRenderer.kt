@@ -201,40 +201,43 @@ class WebViewPdfRenderer(
         }
 
     /**
-     * Render the loaded page to a multi-page A4 PDF using SCROLL-AND-DRAW:
-     * the WebView is laid out only one page tall (so the software-layer bitmap
-     * is small) and scrolled page by page. Laying it out at the full content
-     * height would allocate a giant bitmap and OOM-crash on long posts.
+     * Render the loaded page to a multi-page A4 PDF.
+     *
+     * The WebView is laid out at its FULL content height with a software layer,
+     * so the whole page is painted once and every A4 slice (via canvas
+     * translate) has real content. Scroll-and-draw was tried but left blank
+     * pages — an off-screen WebView doesn't repaint scrolled regions in time.
+     *
+     * Memory is bounded by capping the content height (the software-layer
+     * bitmap is renderWidthPx × height × 4 bytes); a OutOfMemoryError is caught
+     * (the post is skipped, not crashed).
      */
     private fun drawToPdf(outFile: File): Boolean {
-        val maxPages = 800
+        // ~16000 px ≈ 10 A4 pages; bitmap ≈ 1080×16000×4 ≈ 69 MB peak.
+        val maxContentPx = 16000
         val widthSpec = View.MeasureSpec.makeMeasureSpec(renderWidthPx, View.MeasureSpec.EXACTLY)
         val pageHeightPx = (pageHeightPt / scale).toInt().coerceAtLeast(1)
         var doc: PdfDocument? = null
         var fos: FileOutputStream? = null
         return try {
-            // 1) Measure full content height (measurement only — no big allocation).
             web.measure(widthSpec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
-            var fullH = web.measuredHeight.coerceAtLeast(1)
-            if (fullH > pageHeightPx * maxPages) {
-                log("  page very long — capped at $maxPages pages")
-                fullH = pageHeightPx * maxPages
+            var contentH = web.measuredHeight.coerceAtLeast(1)
+            if (contentH > maxContentPx) {
+                log("  long page truncated (${contentH}px → ${maxContentPx}px)")
+                contentH = maxContentPx
             }
-            val pages = ((fullH + pageHeightPx - 1) / pageHeightPx).coerceAtLeast(1)
+            web.layout(0, 0, renderWidthPx, contentH)
 
-            // 2) Lay the view out ONE page tall and scroll through the content.
-            web.measure(widthSpec, View.MeasureSpec.makeMeasureSpec(pageHeightPx, View.MeasureSpec.EXACTLY))
-            web.layout(0, 0, renderWidthPx, pageHeightPx)
-
+            val pages = ((contentH + pageHeightPx - 1) / pageHeightPx).coerceAtLeast(1)
             doc = PdfDocument()
             for (i in 0 until pages) {
-                web.scrollTo(0, i * pageHeightPx)
                 val info = PdfDocument.PageInfo.Builder(pageWidthPt, pageHeightPt, i + 1).create()
                 val page = doc.startPage(info)
                 val c = page.canvas
                 c.save()
                 c.scale(scale, scale)
-                web.draw(c)            // draws the current viewport slice
+                c.translate(0f, (-i * pageHeightPx).toFloat())
+                web.draw(c)
                 c.restore()
                 doc.finishPage(page)
             }
@@ -247,7 +250,6 @@ class WebViewPdfRenderer(
         } finally {
             try { fos?.close() } catch (_: Throwable) {}
             try { doc?.close() } catch (_: Throwable) {}
-            try { web.scrollTo(0, 0) } catch (_: Throwable) {}
         }
     }
 
