@@ -1,8 +1,12 @@
 package com.drmd.lj2pdf
 
 import android.content.Context
+import android.graphics.PixelFormat
 import android.graphics.pdf.PdfDocument
+import android.os.Build
+import android.view.Gravity
 import android.view.View
+import android.view.WindowManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -40,7 +44,9 @@ class WebViewPdfRenderer(
 
     @Volatile private var dead = false
     private var loads = 0
-    private val recreateEvery = 20      // refresh the WebView to bound memory
+    private val recreateEvery = 8       // refresh the WebView often to bound memory
+    private val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private var attached: WebView? = null
     private var web: WebView = newWeb()
 
     private fun newWeb(): WebView {
@@ -54,12 +60,49 @@ class WebViewPdfRenderer(
             cacheMode = WebSettings.LOAD_NO_CACHE
         }
         w.setLayerType(View.LAYER_TYPE_SOFTWARE, null)   // draw() needs software layer
+        attachOverlay(w)
         return w
+    }
+
+    /**
+     * Give the WebView a real (1×1, invisible) window via WindowManager so it
+     * keeps rendering when the app is in the background — without this an
+     * off-screen WebView is throttled/blank and progress stalls on minimise.
+     * Needs the "draw over other apps" permission; falls back gracefully.
+     */
+    private fun attachOverlay(w: WebView) {
+        try {
+            val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+            val lp = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                type,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSLUCENT
+            )
+            lp.alpha = 0f                       // fully transparent: invisible to the user
+            lp.gravity = Gravity.TOP or Gravity.START
+            wm.addView(w, lp)
+            attached = w
+        } catch (t: Throwable) {
+            attached = null
+            log("  (overlay unavailable — background rendering may stall: ${t.message})")
+        }
+    }
+
+    private fun detachOverlay() {
+        try { attached?.let { wm.removeView(it) } } catch (_: Throwable) {}
+        attached = null
     }
 
     /** Recreate the WebView if it died, or periodically to bound memory. */
     private fun ensureAlive() {
         if (dead || loads >= recreateEvery) {
+            detachOverlay()
             try { web.destroy() } catch (_: Throwable) {}
             web = newWeb()
             dead = false
@@ -68,6 +111,7 @@ class WebViewPdfRenderer(
     }
 
     fun destroy() {
+        detachOverlay()
         try { web.destroy() } catch (_: Throwable) {}
     }
 

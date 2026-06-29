@@ -207,18 +207,56 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             }
         }
 
-        // Ask for the notification permission (Android 13+) so progress shows.
+        launchService(intent, "Starting…")
+    }
+
+    /**
+     * Start the service, after making sure background work will actually keep
+     * running: requests the notification permission and the "draw over other
+     * apps" permission (the latter lets the offscreen WebView render in the
+     * background instead of stalling/resetting when minimised).
+     */
+    private fun launchService(intent: Intent, status: String) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
         ) {
             askNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        val go = {
+            txtLog.text = ""
+            txtStatus.text = status
+            setBusy(true)
+            ContextCompat.startForegroundService(this, intent)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            !android.provider.Settings.canDrawOverlays(this)
+        ) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Фоновая работа")
+                .setMessage(
+                    "Чтобы скачивание не сбрасывалось при сворачивании, разрешите " +
+                    "«Поверх других приложений» — это нужно для рендера страниц в фоне."
+                )
+                .setPositiveButton("Разрешить") { _, _ -> openOverlaySettings() }
+                .setNegativeButton("Запустить так") { _, _ -> go() }
+                .setCancelable(false)
+                .show()
+        } else go()
+    }
 
-        txtLog.text = ""
-        txtStatus.text = "Starting…"
-        setBusy(true)
-        ContextCompat.startForegroundService(this, intent)
+    private fun openOverlaySettings() {
+        try {
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+            toast("Включите разрешение и снова нажмите Start")
+        } catch (_: Throwable) {
+            toast("Откройте: Настройки → Поверх других приложений")
+        }
     }
 
     /** Tell the running service how many scanned items to download. */
@@ -384,10 +422,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_CLEAN, cbClean.isChecked)
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
-        txtLog.text = ""
-        txtStatus.text = "Updating ${p.name}…"
-        setBusy(true)
-        ContextCompat.startForegroundService(this, intent)
+        launchService(intent, "Updating ${p.name}…")
     }
 
     private fun setBusy(busy: Boolean) {
