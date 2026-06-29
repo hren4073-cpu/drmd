@@ -436,6 +436,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Projects")
             .setItems(names) { _, i -> showProjectActions(projects[i]) }
+            .setNeutralButton("Merge → RAG") { _, _ -> startRag(projects, "merged_rag") }
             .setNegativeButton("Close", null)
             .show()
     }
@@ -447,6 +448,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 arrayOf(
                     "Update (new posts)",
                     "Deep rescan (incl. backdated)",
+                    "Export RAG (JSONL)",
                     "Open PDF",
                     "Delete"
                 )
@@ -454,11 +456,29 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 when (i) {
                     0 -> updateProject(p, deep = false)
                     1 -> updateProject(p, deep = true)
-                    2 -> openFile(p.bookFile)
-                    3 -> confirmDelete(p)
+                    2 -> startRag(listOf(p), "${p.name}_rag")
+                    3 -> openFile(p.bookFile)
+                    4 -> confirmDelete(p)
                 }
             }
             .show()
+    }
+
+    /** Build a RAG (vector-DB) corpus JSONL from one or more projects. */
+    private fun startRag(projects: List<Project>, name: String) {
+        if (ConvertBus.running) { toast("Already running."); return }
+        val withPosts = projects.filter { it.entries().isNotEmpty() }
+        if (withPosts.isEmpty()) { toast("No saved posts to export."); return }
+        val intent = Intent(this, ConvertService::class.java).apply {
+            putExtra(ConvertService.EXTRA_MODE, "rag")
+            putExtra(ConvertService.EXTRA_NAME, name)
+            putStringArrayListExtra(
+                ConvertService.EXTRA_RAG_DIRS,
+                ArrayList(withPosts.map { it.dir.absolutePath })
+            )
+            treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
+        }
+        launchService(intent, "RAG: $name…")
     }
 
     private fun confirmDelete(p: Project) {

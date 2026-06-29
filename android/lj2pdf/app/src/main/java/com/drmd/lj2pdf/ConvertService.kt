@@ -53,6 +53,9 @@ class ConvertService : Service() {
         const val EXTRA_NAME = "name"
         const val EXTRA_TREE = "tree"
         const val EXTRA_SELECT_COUNT = "selectCount"
+        const val EXTRA_RAG_DIRS = "ragDirs"   // ArrayList<String> of project dirs
+        private const val RAG_CHUNK = 1000
+        private const val RAG_OVERLAP = 150
         const val ACTION_STOP = "com.drmd.lj2pdf.STOP"
         const val ACTION_SELECT = "com.drmd.lj2pdf.SELECT"
 
@@ -100,6 +103,7 @@ class ConvertService : Service() {
 
         scope.launch {
             try {
+                if (mode == "rag") { runRag(intent, name, tree); return@launch }
                 val r = WebViewPdfRenderer(this@ConvertService) { line -> ConvertBus.log(line) }
                 renderer = r
                 when (mode) {
@@ -399,6 +403,58 @@ class ConvertService : Service() {
         return ok
     }
 
+    // ===================== RAG (vector-DB corpus) =========================
+
+    private suspend fun runRag(intent: Intent, name: String, tree: String?) {
+        val dirs = intent.getStringArrayListExtra(EXTRA_RAG_DIRS) ?: arrayListOf()
+        val projects = dirs.map { Project(File(it)) }.filter { it.entries().isNotEmpty() }
+        if (projects.isEmpty()) {
+            ConvertBus.log("[rag] no projects with saved posts"); finishRag(false, null); return
+        }
+        ConvertBus.log("[rag] building corpus from ${projects.size} project(s)…")
+        val out = File(getExternalFilesDir(null), "$name.jsonl")
+        val docs = withContext(Dispatchers.IO) {
+            try {
+                RagExporter.export(projects, out, RAG_CHUNK, RAG_OVERLAP) { d, t, s ->
+                    ConvertBus.progress(d, t, s)
+                    nm.notify(NID, progressNotif(s, d, t, t == 0))
+                }
+            } catch (t: Throwable) { ConvertBus.log("[rag] error: ${t.message}"); -1 }
+        }
+        if (docs <= 0) { finishRag(false, null); return }
+        if (tree != null) copyToTree(out, tree, "$name.jsonl", "application/json")
+        finishRag(true, out)
+    }
+
+    private fun finishRag(ok: Boolean, file: File?) {
+        running = false
+        releaseWakeLock()
+        stopForeground(true)
+        val n = NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
+            .setContentTitle(if (ok) "RAG dataset ready" else "RAG export failed")
+            .setContentText(file?.let { "${it.name} (${it.length() / 1024} KB) — tap to share" } ?: "")
+            .setAutoCancel(true)
+        if (ok && file != null) n.setContentIntent(shareIntent(file, "application/json"))
+        nm.notify(NID + 1, n.build())
+        ConvertBus.finished(ok, null)
+        stopSelf()
+    }
+
+    private fun shareIntent(file: File, mime: String): PendingIntent {
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val chooser = Intent.createChooser(send, "Share dataset")
+            .apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        var flags = PendingIntent.FLAG_UPDATE_CURRENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags = flags or PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getActivity(this, 1, chooser, flags)
+    }
+
     // ===================== SIMPLE (pages / list) ==========================
 
     private suspend fun runSimple(
@@ -491,11 +547,13 @@ class ConvertService : Service() {
         stopSelf()
     }
 
-    private fun copyToTree(src: File, treeUri: String, displayName: String) {
+    private fun copyToTree(
+        src: File, treeUri: String, displayName: String, mime: String = "application/pdf"
+    ) {
         try {
             val tree = DocumentFile.fromTreeUri(this, Uri.parse(treeUri)) ?: return
             tree.findFile(displayName)?.delete()
-            val doc = tree.createFile("application/pdf", displayName) ?: return
+            val doc = tree.createFile(mime, displayName) ?: return
             contentResolver.openOutputStream(doc.uri)?.use { out ->
                 FileInputStream(src).use { it.copyTo(out) }
             }
