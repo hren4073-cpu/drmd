@@ -111,7 +111,9 @@ class ConvertService : Service() {
                 finish(false, null)
             }
         }
-        return START_NOT_STICKY
+        // If the OS kills us mid-run, redeliver the same intent and resume:
+        // project mode skips posts already on disk, so it picks up where it left off.
+        return START_REDELIVER_INTENT
     }
 
     // ===================== PROJECT (archive + update) =====================

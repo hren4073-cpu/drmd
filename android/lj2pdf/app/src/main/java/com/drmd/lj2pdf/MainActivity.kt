@@ -224,6 +224,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         ) {
             askNotif.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        requestBatteryExemptionIfNeeded()
         val go = {
             txtLog.text = ""
             txtStatus.text = status
@@ -244,6 +245,21 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 .setCancelable(false)
                 .show()
         } else go()
+    }
+
+    /** One-tap system prompt to stop the OS from killing the background job. */
+    private fun requestBatteryExemptionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        try {
+            val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) return
+            startActivity(
+                Intent(
+                    android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        } catch (_: Throwable) { /* OEM may not support it */ }
     }
 
     private fun openOverlaySettings() {
