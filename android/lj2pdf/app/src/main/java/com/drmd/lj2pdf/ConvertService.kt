@@ -232,22 +232,33 @@ class ConvertService : Service() {
     ): List<String> {
         val monthRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/?$")
         val dayRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/(\\d{2})/?$")
+        val yearRe = Regex("^https?://[^/]+/(\\d{4})/?$")
         val monthSet = LinkedHashSet<String>()
 
-        // 1) months listed directly on the calendar (usually only the latest year).
+        // 1) read the calendar: month links (latest year) + a year navigation
+        //    that also lists years posts were BACK-DATED to (e.g. 1965).
         ConvertBus.log("[scan] reading archive…")
-        (withTimeoutOrNull(PAGE_TIMEOUT_MS) {
+        val cal = withTimeoutOrNull(PAGE_TIMEOUT_MS) {
             renderer.collectAllLinks("$base/calendar", SCAN_SETTLE_MS)
-        } ?: emptyList()).filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
+        } ?: emptyList()
+        cal.filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
 
-        // 2) probe EVERY year page /YYYY/ to gather months across the whole blog
-        //    — /calendar alone only exposes the current year, so big blogs were
-        //    being cut off (e.g. 32 of 819 posts).
+        // 2) years to probe = every year the calendar links to (catches back-
+        //    dated years) + a blind range down to 1940 (LJ users back-date posts
+        //    to the mid-1900s, below the 1999 LJ epoch, e.g. 1950–1970).
         val curYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-        for (y in curYear downTo 1999) {
+        val years = sortedSetOf(Comparator.reverseOrder<Int>())
+        cal.filter { yearRe.matches(it) }.forEach { val y = yr(it); if (y in 1900..curYear) years.add(y) }
+        for (y in curYear downTo 1940) years.add(y)
+
+        // 3) probe each year page /YYYY/ for its month links.
+        var probed = 0
+        for (y in years) {
             if (ConvertBus.cancelRequested) break
+            probed++
             nm.notify(NID, progressNotif(
-                "Scanning archive: year $y… (${monthSet.size} months)", 0, 0, true))
+                "Scanning archive: year $y ($probed/${years.size})… (${monthSet.size} months)",
+                0, 0, true))
             (withTimeoutOrNull(PAGE_TIMEOUT_MS) {
                 renderer.collectAllLinks("$base/$y/", SCAN_SETTLE_MS)
             } ?: emptyList()).filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
@@ -289,6 +300,9 @@ class ConvertService : Service() {
         ConvertBus.log("[scan] archive total: ${out.size} post(s)")
         return out
     }
+
+    private fun yr(url: String): Int =
+        Regex("/(\\d{4})").find(url)?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
     private fun ym(url: String): Int {
         val m = Regex("/(\\d{4})/(\\d{2})").find(url) ?: return 0
