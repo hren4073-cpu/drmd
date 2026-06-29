@@ -145,7 +145,7 @@ class WebViewPdfRenderer(
         delay(settleMs)
         if (clean) { evalJs(CLEAN_JS); delay(250) }
 
-        val title = jsUnquote(evalJs("document.title"))
+        val title = jsUnquote(evalJs(TITLE_JS))
         val signature = jsUnquote(evalJs(COUNT_JS))
         val count = if (signature.isEmpty()) 0 else signature.split(',').size
         if (requireEntries && count == 0) return RenderResult(false, "", 0, title)
@@ -314,6 +314,21 @@ class WebViewPdfRenderer(
       if(m && m[1].indexOf(host)!==-1) seen[m[2]]=1;
     }
     return Object.keys(seen).sort().join(',');
+  }catch(e){ return ''; }
+})();
+"""
+
+        /** Best post title for the TOC: the entry subject, else <title>. */
+        private const val TITLE_JS = """
+(function(){
+  try{
+    var sels=['h1.entry-title','.b-singlepost-title','.entry-title','.j-e-title',
+      '.asset-name','.subject','.subj','.entryHeader h2','article h1','h1','h2'];
+    for(var i=0;i<sels.length;i++){
+      var e=document.querySelector(sels[i]);
+      if(e){ var t=(e.textContent||'').replace(/\s+/g,' ').trim(); if(t) return t; }
+    }
+    return (document.title||'').replace(/\s+/g,' ').trim();
   }catch(e){ return ''; }
 })();
 """
