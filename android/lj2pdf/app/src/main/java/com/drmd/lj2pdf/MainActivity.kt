@@ -18,6 +18,7 @@ import androidx.core.content.FileProvider
 import androidx.core.widget.NestedScrollView
 import androidx.documentfile.provider.DocumentFile
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.progressindicator.CircularProgressIndicator
 import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
@@ -40,6 +41,10 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private lateinit var txtHint: TextView
     private lateinit var txtOut: TextView
     private lateinit var progress: LinearProgressIndicator
+    private lateinit var circular: CircularProgressIndicator
+    private lateinit var progress2: LinearProgressIndicator
+    private lateinit var txtPercent: TextView
+    private lateinit var txtCount: TextView
     private lateinit var txtStatus: TextView
     private lateinit var btnStart: MaterialButton
     private lateinit var btnCancel: MaterialButton
@@ -100,6 +105,10 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         txtHint = findViewById(R.id.txtHint)
         txtOut = findViewById(R.id.txtOut)
         progress = findViewById(R.id.progress)
+        circular = findViewById(R.id.circular)
+        progress2 = findViewById(R.id.progress2)
+        txtPercent = findViewById(R.id.txtPercent)
+        txtCount = findViewById(R.id.txtCount)
         txtStatus = findViewById(R.id.txtStatus)
         btnStart = findViewById(R.id.btnStart)
         btnCancel = findViewById(R.id.btnCancel)
@@ -651,6 +660,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             progress.max = ConvertBus.total
             progress.progress = ConvertBus.done
         }
+        setGauge(ConvertBus.done, ConvertBus.total)
         btnOpen.isEnabled = ConvertBus.lastBook?.exists() == true
         // If the service is parked waiting for a choice, re-show the picker.
         if (ConvertBus.awaitingSelection) showSelectionDialog(ConvertBus.scanTotal)
@@ -664,11 +674,13 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     override fun onScanProgress(pagesScanned: Int, itemsFound: Int) {
         progress.isIndeterminate = true
         txtStatus.text = "Scanning… page $pagesScanned, $itemsFound found"
+        setGaugeScanning(itemsFound)
     }
 
     override fun onScanReady(total: Int) {
         progress.isIndeterminate = true
         txtStatus.text = "Scanned $total — choose how many"
+        setGauge(0, total)
         showSelectionDialog(total)
     }
 
@@ -677,6 +689,35 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         progress.isIndeterminate = false
         progress.max = maxOf(total, 1)
         progress.progress = done
+        setGauge(done, total)
+    }
+
+    /** Determinate readiness gauge (circle + bar + count). */
+    private fun setGauge(done: Int, total: Int) {
+        if (total > 0) {
+            val pct = (done * 100 / total).coerceIn(0, 100)
+            circular.isIndeterminate = false
+            circular.max = total; circular.setProgressCompat(done, true)
+            progress2.isIndeterminate = false
+            progress2.max = total; progress2.setProgressCompat(done, true)
+            txtPercent.text = "$pct%"
+            txtCount.text = "$done / $total"
+        } else {
+            circular.isIndeterminate = false
+            circular.setProgressCompat(0, false)
+            progress2.isIndeterminate = false
+            progress2.setProgressCompat(0, false)
+            txtPercent.text = "—"
+            txtCount.text = "—"
+        }
+    }
+
+    /** Indeterminate gauge while the structure scan runs (count unknown). */
+    private fun setGaugeScanning(found: Int) {
+        circular.isIndeterminate = true
+        progress2.isIndeterminate = true
+        txtPercent.text = "…"
+        txtCount.text = "$found found"
     }
 
     override fun onLog(line: String) {
@@ -695,5 +736,6 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         txtStatus.text = if (ok && book != null)
             "Done — ${book.name} (${book.length() / 1024} KB)" else "Failed."
         btnOpen.isEnabled = ok && book != null
+        if (ok) { val t = maxOf(ConvertBus.total, 1); setGauge(t, t) }   // 100 %
     }
 }
