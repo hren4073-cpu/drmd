@@ -1,13 +1,27 @@
 package com.drmd.lj2pdf
 
+import android.os.Handler
+import android.os.Looper
 import java.io.File
 
 /**
  * Tiny in-process bus between [ConvertService] (producer) and [MainActivity]
  * (observer). Same process, so a plain singleton is enough — no broadcasts.
- * All callbacks fire on the main thread.
+ *
+ * Callbacks always reach the observer on the MAIN thread: producers run on
+ * background dispatchers (e.g. the PDF merge on Dispatchers.IO), and the UI
+ * touches Material progress indicators whose animations may only be started on
+ * the main thread — so every dispatch is marshalled here.
  */
 object ConvertBus {
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Run [block] on the main thread now if already there, else post it. */
+    private inline fun onMain(crossinline block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) block()
+        else mainHandler.post { block() }
+    }
     interface Observer {
         fun onScanProgress(pagesScanned: Int, itemsFound: Int)
         /** Scan finished and the service is waiting for the user to pick a count. */
@@ -43,20 +57,20 @@ object ConvertBus {
     }
 
     fun scanProgress(pages: Int, found: Int) {
-        observer?.onScanProgress(pages, found)
+        onMain { observer?.onScanProgress(pages, found) }
     }
 
     fun scanReady(total: Int) {
         scanTotal = total
         awaitingSelection = true
-        observer?.onScanReady(total)
+        onMain { observer?.onScanReady(total) }
     }
 
     fun progress(done: Int, total: Int, status: String) {
         this.done = done
         this.total = total
         lastStatus = status
-        observer?.onProgress(done, total, status)
+        onMain { observer?.onProgress(done, total, status) }
     }
 
     fun log(line: String) {
@@ -64,7 +78,7 @@ object ConvertBus {
         // Keep the in-memory board small — the full log lives in files/log.txt.
         if (logText.length > 24_000) logText.delete(0, logText.length - 16_000)
         Logx.append(line)
-        observer?.onLog(line)
+        onMain { observer?.onLog(line) }
     }
 
     fun finished(ok: Boolean, book: File?) {
@@ -72,6 +86,6 @@ object ConvertBus {
         awaitingSelection = false
         lastStatus = if (ok) "Done." else "Failed."
         if (book != null) lastBook = book
-        observer?.onDone(ok, book)
+        onMain { observer?.onDone(ok, book) }
     }
 }

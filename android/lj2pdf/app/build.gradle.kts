@@ -12,8 +12,21 @@ android {
         minSdk = 21
         // 33 (not 34) so the foreground service needs no Android-14 FGS type.
         targetSdk = 33
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "2.1"
+    }
+
+    // A committed, fixed debug keystore so EVERY build (CI or local) is signed
+    // with the SAME key. Android only lets an update install over an existing
+    // app when signatures match, so this is what makes future updates install
+    // over the top without uninstalling (and thus without losing data).
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
