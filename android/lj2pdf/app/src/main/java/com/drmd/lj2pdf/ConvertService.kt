@@ -112,6 +112,7 @@ class ConvertService : Service() {
             try {
                 if (mode == "rag") { runRag(intent, name, tree); return@launch }
                 if (mode == "tg_rag") { runTgRag(intent, name, tree); return@launch }
+                if (mode == "download") { runDownload(intent); return@launch }
                 val r = WebViewPdfRenderer(this@ConvertService) { line -> ConvertBus.log(line) }
                 renderer = r
                 when (mode) {
@@ -126,6 +127,61 @@ class ConvertService : Service() {
         // If the OS kills us mid-run, redeliver the same intent and resume:
         // project mode skips posts already on disk, so it picks up where it left off.
         return START_REDELIVER_INTENT
+    }
+
+    // ===================== STAGE 1: download HTML base ====================
+
+    /**
+     * Multithreaded HTML download (no WebView). Scans the blog over HTTP+jsoup,
+     * downloads each post's HTML + images in parallel, and saves the index.
+     * The PDF / EPUB / RAG builders later read this saved base.
+     */
+    private suspend fun runDownload(intent: Intent) {
+        val baseIn = (intent.getStringExtra(EXTRA_BASE) ?: "").trimEnd('/')
+        if (baseIn.isEmpty()) { finish(false, null); return }
+        val project = Projects.forBase(this, baseIn)
+        val existing = project.entries()
+        val knownIds = existing.map { it.id }.toSet()
+        val auto = intent.getBooleanExtra(EXTRA_AUTO, true)
+        val deep = intent.getBooleanExtra(EXTRA_DEEP, false)
+        val step = if (existing.isNotEmpty()) project.step else intent.getIntExtra(EXTRA_STEP, 20)
+        if (existing.isEmpty()) project.step = step
+        val max = intent.getIntExtra(EXTRA_MAX, DEFAULT_MAX)
+        val note: (String) -> Unit = { s -> nm.notify(NID, progressNotif(s, 0, 0, true)) }
+
+        ConvertBus.log("[download] $baseIn")
+        val scanned = if (existing.isNotEmpty() && !deep)
+            SiteScan.scanNew(project.base, step, knownIds, max, note)
+        else
+            SiteScan.scanAll(project.base, max, note)
+        if (ConvertBus.cancelRequested) { finish(false, null); return }
+        if (scanned.isEmpty() && existing.isEmpty()) {
+            ConvertBus.log("[download] nothing found"); finish(false, null); return
+        }
+
+        // Fresh blog + not auto → let the user pick how many to grab.
+        var toGet = scanned
+        if (existing.isEmpty() && !auto && scanned.isNotEmpty()) {
+            val def = CompletableDeferred<Int>()
+            selection = def
+            ConvertBus.log("[scan] found ${scanned.size} post(s) — waiting for your choice")
+            nm.notify(NID, progressNotif("Scanned ${scanned.size} — choose how many", 0, 0, true))
+            ConvertBus.scanReady(scanned.size)
+            val count = def.await().coerceIn(0, scanned.size); selection = null
+            if (count == 0 || ConvertBus.cancelRequested) { finish(false, null); return }
+            toGet = scanned.take(count)
+        }
+
+        val fresh = HtmlArchiver.download(project, toGet)
+        // Rebuild the index: full/deep scans use archive order; updates prepend.
+        val byId = (fresh + existing).associateBy { it.id }
+        val finalEntries = if (existing.isEmpty() || deep)
+            scanned.mapNotNull { byId[Projects.idOf(it)] }.ifEmpty { byId.values.toList() }
+        else
+            fresh + existing.filter { it.id !in fresh.map { f -> f.id }.toSet() }
+        project.saveEntries(finalEntries)
+        ConvertBus.log("[download] HTML base ready: ${finalEntries.size} post(s)")
+        finish(true, null)
     }
 
     // ===================== PROJECT (archive + update) =====================

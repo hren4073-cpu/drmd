@@ -12,8 +12,8 @@ android {
         minSdk = 21
         // 33 (not 34) so the foreground service needs no Android-14 FGS type.
         targetSdk = 33
-        versionCode = 3
-        versionName = "2.1"
+        versionCode = 4
+        versionName = "3.0"
     }
 
     // A committed, fixed debug keystore so EVERY build (CI or local) is signed
@@ -58,4 +58,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     // Pure-JVM port of Apache PDFBox for Android: merge + outline/bookmarks.
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // HTML parser for the multithreaded HTTP download + content extraction.
+    implementation("org.jsoup:jsoup:1.17.2")
 }

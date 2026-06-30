@@ -52,6 +52,17 @@ class Project(val dir: File) {
 
     fun postPdf(id: String): File = File(postsDir, "$id.pdf")
 
+    // ---- HTML base (downloaded first; PDF/EPUB/RAG all build from it) ----
+    val htmlDir: File get() = File(dir, "html").apply { mkdirs() }
+    /** Self-contained reader HTML for one post (images rewritten to img/<id>/). */
+    fun postHtml(id: String): File = File(htmlDir, "$id.html")
+    /** Local image folder for one post, under the html dir so links are relative. */
+    fun imgDir(id: String): File = File(htmlDir, "img/$id").apply { mkdirs() }
+    /** True when a post's HTML has been downloaded. */
+    fun htmlReady(id: String): Boolean = postHtml(id).let { it.exists() && it.length() > 0 }
+    /** The merged EPUB book. */
+    val epubFile: File get() = File(dir, "book.epub")
+
     // ---- Multi-volume books (large blogs split to keep memory low) ----
     /** book_vol01.pdf, book_vol02.pdf … (1-based). */
     fun volumeFile(index: Int): File = File(dir, "book_vol%02d.pdf".format(index))
