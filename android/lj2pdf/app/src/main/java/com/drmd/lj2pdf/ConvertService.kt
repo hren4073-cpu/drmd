@@ -60,6 +60,9 @@ class ConvertService : Service() {
         const val EXTRA_AUTO_RAG = "autoRag"   // also export RAG right after archiving
         private const val RAG_CHUNK = 1000
         private const val RAG_OVERLAP = 150
+        // Split big blogs: 100 posts = 1 PDF volume, so each merge only loads
+        // ~100 posts into memory at a time (keeps peak RAM low on the phone).
+        private const val VOLUME_SIZE = 100
         const val ACTION_STOP = "com.drmd.lj2pdf.STOP"
         const val ACTION_SELECT = "com.drmd.lj2pdf.SELECT"
 
@@ -172,10 +175,10 @@ class ConvertService : Service() {
                     PostEntry(id, perma, titleById[id] ?: "Пост $id")
                 } else null
             }
-            val ok = mergeProject(project, finalEntries, tree)
+            val book = mergeProject(project, finalEntries, tree)
             ConvertBus.log("[deep] added ${newEntries.size}, total ${finalEntries.size}")
-            if (ok && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
-            finish(ok, if (ok) project.bookFile else null)
+            if (book != null && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
+            finish(book != null, book)
         } else if (existing.isNotEmpty()) {
             // ---- UPDATE (fast: only the new top of the feed) ----
             ConvertBus.log("[update] checking ${project.name} for new posts…")
@@ -184,17 +187,18 @@ class ConvertService : Service() {
             if (ConvertBus.cancelRequested) { finish(false, null); return }
             if (fresh.isEmpty()) {
                 ConvertBus.log("[update] already up to date")
-                if (project.bookFile.exists()) { finish(true, project.bookFile); return }
-                val ok = mergeProject(project, existing, tree)
-                finish(ok, project.bookFile.takeIf { it.exists() }); return
+                val existingBook = project.primaryBook()
+                if (existingBook != null) { finish(true, existingBook); return }
+                val book = mergeProject(project, existing, tree)
+                finish(book != null, book); return
             }
             ConvertBus.log("[update] ${fresh.size} new post(s)")
             renderPosts(renderer, project, fresh, clean, newEntries, idOf)
             val merged = newEntries + existing
-            val ok = mergeProject(project, merged, tree)
+            val book = mergeProject(project, merged, tree)
             ConvertBus.log("[update] added ${newEntries.size}, total ${merged.size}")
-            if (ok && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
-            finish(ok, if (ok) project.bookFile else null)
+            if (book != null && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
+            finish(book != null, book)
         } else {
             // ---- FRESH ----
             val scanned = profile?.scanAll(renderer, project.base, step, from, max, note)
@@ -213,9 +217,9 @@ class ConvertService : Service() {
                 if (count == 0 || ConvertBus.cancelRequested) { finish(false, null); return }
             }
             renderPosts(renderer, project, scanned.take(count), clean, newEntries, idOf)
-            val ok = mergeProject(project, newEntries, tree)
-            if (ok && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
-            finish(ok, if (ok) project.bookFile else null)
+            val book = mergeProject(project, newEntries, tree)
+            if (book != null && autoRag) exportProjectRag(project, ragChunk, ragOverlap, tree)
+            finish(book != null, book)
         }
     }
 
@@ -412,23 +416,60 @@ class ConvertService : Service() {
         }
     }
 
-    /** Save the index and merge all present per-post PDFs into book.pdf. */
+    /**
+     * Save the index and merge present per-post PDFs into book(s). Blogs larger
+     * than [VOLUME_SIZE] posts are split into book_volNN.pdf volumes (each with
+     * its own table of contents) so peak memory stays low. Returns the primary
+     * book to open (volume 1, or the single book.pdf), or null on failure.
+     */
     private suspend fun mergeProject(
         project: Project, entries: List<PostEntry>, tree: String?
-    ): Boolean {
+    ): File? {
         val valid = entries.filter { project.postPdf(it.id).let { f -> f.exists() && f.length() > 0 } }
-        if (valid.isEmpty()) return false
+        if (valid.isEmpty()) return null
         project.saveEntries(valid)
-        ConvertBus.progress(valid.size, valid.size, "Merging ${valid.size} post(s)…")
-        nm.notify(NID, progressNotif("Merging ${valid.size} post(s)…", 0, 0, true))
-        val files = valid.map { project.postPdf(it.id) }
-        val titles = valid.map { it.title }
-        val ok = withContext(Dispatchers.IO) {
-            try { BookBuilder.mergeWithToc(applicationContext, files, titles, project.bookFile) }
-            catch (t: Throwable) { ConvertBus.log("[merge] error: ${t.message}"); false }
+
+        // Clear any stale outputs from a previous (differently-sized) run.
+        project.bookFile.delete()
+        project.volumeFiles().forEach { it.delete() }
+
+        val chunks = valid.chunked(VOLUME_SIZE)
+        val single = chunks.size <= 1
+
+        return withContext(Dispatchers.IO) {
+            try {
+                if (single) {
+                    val files = valid.map { project.postPdf(it.id) }
+                    val titles = valid.map { it.title }
+                    ConvertBus.progress(valid.size, valid.size, "Merging ${valid.size} post(s)…")
+                    nm.notify(NID, progressNotif("Merging ${valid.size} post(s)…", 0, 0, true))
+                    val ok = BookBuilder.mergeWithToc(applicationContext, files, titles, project.bookFile)
+                    if (ok && tree != null) copyToTree(project.bookFile, tree, "${project.name}.pdf")
+                    if (ok) project.bookFile else null
+                } else {
+                    val total = chunks.size
+                    chunks.forEachIndexed { i, chunk ->
+                        val volNo = i + 1
+                        val msg = "Merging volume $volNo/$total (${chunk.size} posts)…"
+                        ConvertBus.log("[merge] $msg")
+                        ConvertBus.progress(volNo, total, msg)
+                        nm.notify(NID, progressNotif(msg, volNo, total, false))
+                        val files = chunk.map { project.postPdf(it.id) }
+                        val titles = chunk.map { it.title }
+                        val vol = project.volumeFile(volNo)
+                        val ok = BookBuilder.mergeWithToc(
+                            applicationContext, files, titles, vol,
+                            heading = "Содержание — том $volNo из $total"
+                        )
+                        if (ok && tree != null)
+                            copyToTree(vol, tree, "${project.name} — том %02d.pdf".format(volNo))
+                    }
+                    project.primaryBook()
+                }
+            } catch (t: Throwable) {
+                ConvertBus.log("[merge] error: ${t.message}"); null
+            }
         }
-        if (ok && tree != null) copyToTree(project.bookFile, tree, "${project.name}.pdf")
-        return ok
     }
 
     // ===================== RAG (vector-DB corpus) =========================

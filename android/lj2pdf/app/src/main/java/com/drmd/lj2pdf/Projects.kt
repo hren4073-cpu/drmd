@@ -51,6 +51,24 @@ class Project(val dir: File) {
     }
 
     fun postPdf(id: String): File = File(postsDir, "$id.pdf")
+
+    // ---- Multi-volume books (large blogs split to keep memory low) ----
+    /** book_vol01.pdf, book_vol02.pdf … (1-based). */
+    fun volumeFile(index: Int): File = File(dir, "book_vol%02d.pdf".format(index))
+
+    /** Existing volume files in order. */
+    fun volumeFiles(): List<File> =
+        dir.listFiles { f -> f.name.matches(Regex("book_vol\\d+\\.pdf")) }
+            ?.sortedBy { it.name } ?: emptyList()
+
+    /** All produced book PDFs: volumes if split, else the single book.pdf. */
+    fun books(): List<File> {
+        val v = volumeFiles()
+        return if (v.isNotEmpty()) v else if (bookFile.exists()) listOf(bookFile) else emptyList()
+    }
+
+    /** The book a user should open first (vol 1, or the single book). */
+    fun primaryBook(): File? = books().firstOrNull()
 }
 
 object Projects {
@@ -59,7 +77,7 @@ object Projects {
 
     fun list(ctx: Context): List<Project> =
         root(ctx).listFiles()?.filter { it.isDirectory }?.map { Project(it) }
-            ?.sortedByDescending { it.bookFile.lastModified() } ?: emptyList()
+            ?.sortedByDescending { it.primaryBook()?.lastModified() ?: 0L } ?: emptyList()
 
     fun hostOf(base: String): String =
         (Uri.parse(base).host ?: "blog").replace(Regex("[^A-Za-z0-9.-]"), "_")

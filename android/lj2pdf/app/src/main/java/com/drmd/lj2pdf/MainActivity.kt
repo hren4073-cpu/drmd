@@ -484,11 +484,28 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                     0 -> updateProject(p, deep = false)
                     1 -> updateProject(p, deep = true)
                     2 -> startRag(listOf(p), "${p.name}_rag")
-                    3 -> openFile(p.bookFile)
+                    3 -> openProjectBook(p)
                     4 -> confirmDelete(p)
                 }
             }
             .show()
+    }
+
+    /** Open the project's book, letting the user pick a volume when split. */
+    private fun openProjectBook(p: Project) {
+        val books = p.books()
+        when {
+            books.isEmpty() -> toast("No PDF yet — run Update first.")
+            books.size == 1 -> openFile(books[0])
+            else -> {
+                val labels = books.mapIndexed { i, _ -> "Том ${i + 1}" }.toTypedArray()
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("${p.name} — ${books.size} volumes")
+                    .setItems(labels) { _, i -> openFile(books[i]) }
+                    .setNegativeButton("Close", null)
+                    .show()
+            }
+        }
     }
 
     // -- settings (the "⋮" menu) ------------------------------------------

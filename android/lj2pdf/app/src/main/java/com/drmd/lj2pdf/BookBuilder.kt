@@ -44,7 +44,10 @@ object BookBuilder {
     private val linkBlue = PDColor(floatArrayOf(0.10f, 0.30f, 0.65f), PDDeviceRGB.INSTANCE)
 
     /** @return true on success; [out] then contains the finished book.pdf. */
-    fun mergeWithToc(ctx: Context, pages: List<File>, titles: List<String>, out: File): Boolean {
+    fun mergeWithToc(
+        ctx: Context, pages: List<File>, titles: List<String>, out: File,
+        heading: String = "Содержание"
+    ): Boolean {
         val usable = pages.filter { it.exists() && it.length() > 0 }
         if (usable.isEmpty()) return false
 
@@ -103,7 +106,7 @@ object BookBuilder {
                         cs.beginText()
                         cs.setFont(bold, TITLE_SIZE)
                         cs.newLineAtOffset(MARGIN, y - TITLE_SIZE)
-                        cs.showText(sanitize(bold, "Содержание"))
+                        cs.showText(sanitize(bold, heading))
                         cs.endText()
                         y -= (TITLE_SIZE + 18f)
                     }
@@ -185,7 +188,7 @@ object BookBuilder {
 
         // Clickable link rectangle covering the whole row.
         val link = PDAnnotationLink()
-        link.border = PDBorderStyleDictionary().apply { width = 0f }
+        link.borderStyle = PDBorderStyleDictionary().apply { width = 0f }
         link.rectangle = PDRectangle(leftX, baselineY - 4f, rightX - leftX, LINE_H)
         val dest = PDPageXYZDestination().apply {
             this.page = doc.getPage(targetPageIdx)
