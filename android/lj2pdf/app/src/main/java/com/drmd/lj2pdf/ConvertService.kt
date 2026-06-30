@@ -68,9 +68,9 @@ class ConvertService : Service() {
 
         private const val CHANNEL = "convert"
         private const val NID = 0x10
-        private const val SETTLE_LIST_MS = 1500L
-        private const val SETTLE_POST_MS = 2500L
-        private const val SCAN_SETTLE_MS = 1200L
+        private const val SETTLE_LIST_MS = 900L
+        private const val SETTLE_POST_MS = 2500L   // posts need images loaded
+        private const val SCAN_SETTLE_MS = 600L    // scanning only collects links
         private const val PAGE_TIMEOUT_MS = 90_000L
         private const val DEFAULT_MAX = 2000
     }
@@ -287,25 +287,44 @@ class ConvertService : Service() {
         } ?: emptyList()
         cal.filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
 
-        // 2) years to probe = every year the calendar links to (catches back-
-        //    dated years) + a blind range down to 1940 (LJ users back-date posts
-        //    to the mid-1900s, below the 1999 LJ epoch, e.g. 1950–1970).
+        // 2) years to probe: every year the calendar links to (these already
+        //    include the back-dated years a user posted to, e.g. 1965), plus a
+        //    blind walk down from the current year as a safety net.
         val curYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
-        val years = sortedSetOf(Comparator.reverseOrder<Int>())
-        cal.filter { yearRe.matches(it) }.forEach { val y = yr(it); if (y in 1900..curYear) years.add(y) }
-        for (y in curYear downTo 1940) years.add(y)
+        val calYears = sortedSetOf(Comparator.reverseOrder<Int>())
+        cal.filter { yearRe.matches(it) }.forEach { val y = yr(it); if (y in 1900..curYear) calYears.add(y) }
 
-        // 3) probe each year page /YYYY/ for its month links.
-        var probed = 0
-        for (y in years) {
-            if (ConvertBus.cancelRequested) break
-            probed++
-            nm.notify(NID, progressNotif(
-                "Scanning archive: year $y ($probed/${years.size})… (${monthSet.size} months)",
-                0, 0, true))
+        // probe one /YYYY/ page; return how many NEW months it contributed.
+        suspend fun probeYear(y: Int): Int {
+            val before = monthSet.size
             (withTimeoutOrNull(PAGE_TIMEOUT_MS) {
                 renderer.collectAllLinks("$base/$y/", SCAN_SETTLE_MS)
             } ?: emptyList()).filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
+            return monthSet.size - before
+        }
+
+        // 3a) always probe the explicit calendar years (incl. back-dated).
+        for (y in calYears) {
+            if (ConvertBus.cancelRequested) break
+            nm.notify(NID, progressNotif(
+                "Scanning archive: year $y… (${monthSet.size} months)", 0, 0, true))
+            probeYear(y)
+        }
+        // 3b) blind walk current→1940, but bail out after a long run of empty
+        //     years (a blog that started in 2005 has nothing in the 1940s–90s).
+        var emptyRun = 0
+        var seenNonEmpty = monthSet.isNotEmpty()
+        for (y in curYear downTo 1940) {
+            if (ConvertBus.cancelRequested) break
+            if (y in calYears) continue                 // already probed above
+            nm.notify(NID, progressNotif(
+                "Scanning archive: year $y… (${monthSet.size} months)", 0, 0, true))
+            val found = probeYear(y)
+            if (found > 0) { seenNonEmpty = true; emptyRun = 0 }
+            else if (seenNonEmpty && ++emptyRun >= 8) {
+                ConvertBus.log("[scan] 8 empty years straight — stopping year probe at $y")
+                break
+            }
         }
 
         val months = monthSet.distinct().sortedByDescending { ym(it) }

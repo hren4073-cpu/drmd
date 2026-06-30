@@ -13,8 +13,10 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import java.io.File
 import java.io.FileOutputStream
@@ -217,7 +219,6 @@ class WebViewPdfRenderer(
         val widthSpec = View.MeasureSpec.makeMeasureSpec(renderWidthPx, View.MeasureSpec.EXACTLY)
         val pageHeightPx = (pageHeightPt / scale).toInt().coerceAtLeast(1)
         var doc: PdfDocument? = null
-        var fos: FileOutputStream? = null
         return try {
             web.measure(widthSpec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
             var contentH = web.measuredHeight.coerceAtLeast(1)
@@ -226,6 +227,7 @@ class WebViewPdfRenderer(
                 contentH = maxContentPx
             }
             web.layout(0, 0, renderWidthPx, contentH)
+            yield()                          // let the looper breathe before slicing
 
             val pages = ((contentH + pageHeightPx - 1) / pageHeightPx).coerceAtLeast(1)
             doc = PdfDocument()
@@ -239,16 +241,19 @@ class WebViewPdfRenderer(
                 web.draw(c)
                 c.restore()
                 doc.finishPage(page)
-                if (i % 2 == 0) yield()      // keep the UI/main thread alive
+                yield()                      // yield after EVERY slice → no ANR
             }
-            fos = FileOutputStream(outFile)
-            doc.writeTo(fos)
+            // Serialise off the main thread (no WebView access here): the single
+            // largest main-thread block becomes a background write.
+            val builtDoc = doc!!
+            withContext(Dispatchers.IO) {
+                FileOutputStream(outFile).use { out -> builtDoc.writeTo(out) }
+            }
             true
         } catch (t: Throwable) {
             log("  pdf error: ${t.message}")
             false
         } finally {
-            try { fos?.close() } catch (_: Throwable) {}
             try { doc?.close() } catch (_: Throwable) {}
             // Release the big software-layer bitmap so it doesn't pile up.
             try { web.layout(0, 0, renderWidthPx, 1) } catch (_: Throwable) {}

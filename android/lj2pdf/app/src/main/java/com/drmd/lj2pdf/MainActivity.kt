@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.CheckBox
 import android.widget.RadioGroup
@@ -54,6 +56,14 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     private val prefs by lazy { getSharedPreferences("prefs", MODE_PRIVATE) }
     private var treeUri: String? = null
+
+    // Log lines arrive in bursts during rendering; coalesce them into one
+    // TextView update every ~150 ms so the UI doesn't stutter (single append +
+    // single bound check + single scroll per flush instead of per line).
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private val pendingLog = StringBuilder()
+    private var logFlushScheduled = false
+    private val logFlush = Runnable { flushLog() }
 
     private val pickFolder =
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -671,6 +681,11 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         // Re-sync UI with whatever the service is doing.
         setBusy(ConvertBus.running)
         txtStatus.text = ConvertBus.lastStatus
+        // Full board is re-synced from the bounded buffer; drop anything queued
+        // so coalesced lines aren't appended twice.
+        uiHandler.removeCallbacks(logFlush)
+        logFlushScheduled = false
+        pendingLog.setLength(0)
         txtLog.text = ConvertBus.logText.toString()
         if (ConvertBus.total > 0) {
             progress.isIndeterminate = false
@@ -685,6 +700,8 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     override fun onPause() {
         ConvertBus.observer = null
+        uiHandler.removeCallbacks(logFlush)
+        logFlushScheduled = false
         super.onPause()
     }
 
@@ -738,7 +755,19 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     }
 
     override fun onLog(line: String) {
-        txtLog.append(line + "\n")
+        pendingLog.append(line).append('\n')
+        if (!logFlushScheduled) {
+            logFlushScheduled = true
+            uiHandler.postDelayed(logFlush, 150)
+        }
+    }
+
+    /** Apply all buffered log lines to the board in one pass. */
+    private fun flushLog() {
+        logFlushScheduled = false
+        if (pendingLog.isEmpty()) return
+        txtLog.append(pendingLog)
+        pendingLog.setLength(0)
         // Keep the on-screen board bounded so it can't bloat memory on long runs.
         val len = txtLog.length()
         if (len > 16_000) {
