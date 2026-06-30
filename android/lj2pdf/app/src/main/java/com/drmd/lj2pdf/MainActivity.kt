@@ -214,10 +214,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
         when (mode()) {
             Mode.LJ -> {
-                intent.putExtra(
-                    ConvertService.EXTRA_MODE,
-                    if (cbArchive.isChecked) "lj_project" else "lj_pages"
-                )
+                // Stage 1: download the multithreaded HTML base. Build PDF/EPUB/RAG
+                // afterwards from the project menu.
+                intent.putExtra(ConvertService.EXTRA_MODE, "download")
                 intent.putExtra(ConvertService.EXTRA_AUTO, cbAll.isChecked)
                 intent.putExtra(ConvertService.EXTRA_BASE, raw.trimEnd('/'))
                 intent.putExtra(ConvertService.EXTRA_STEP, step)
@@ -450,13 +449,14 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         if (book == null || !book.exists()) { toast("Book not found."); return }
         try {
             val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", book)
+            val mime = if (book.extension.equals("epub", true)) "application/epub+zip" else "application/pdf"
             val view = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/pdf")
+                setDataAndType(uri, mime)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            startActivity(Intent.createChooser(view, "Open book.pdf"))
+            startActivity(Intent.createChooser(view, "Open ${book.name}"))
         } catch (t: Throwable) {
-            toast("No PDF viewer installed.")
+            toast("Нет приложения для открытия файла.")
         }
     }
 
@@ -480,41 +480,61 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     private fun showProjectActions(p: Project) {
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle(p.name)
+            .setTitle("${p.name}  (${p.entries().size})")
             .setItems(
                 arrayOf(
-                    "Update (new posts)",
-                    "Deep rescan (incl. backdated)",
-                    "Export RAG (JSONL)",
-                    "Open PDF",
-                    "Delete"
+                    "Обновить (докачать новые)",
+                    "Глубокий перескан",
+                    "В PDF (настройки)",
+                    "В EPUB (настройки)",
+                    "В RAG (настройки)",
+                    "Открыть",
+                    "Удалить"
                 )
             ) { _, i ->
                 when (i) {
                     0 -> updateProject(p, deep = false)
                     1 -> updateProject(p, deep = true)
-                    2 -> startRag(listOf(p), "${p.name}_rag")
-                    3 -> openProjectBook(p)
-                    4 -> confirmDelete(p)
+                    2 -> pdfSettingsDialog(p)
+                    3 -> epubSettingsDialog(p)
+                    4 -> ragSettingsDialog { startRag(listOf(p), "${p.name}_rag") }
+                    5 -> openProjectBook(p)
+                    6 -> confirmDelete(p)
                 }
             }
             .show()
     }
 
-    /** Open the project's book, letting the user pick a volume when split. */
+    /** Send a Stage-2 build job (PDF or EPUB) for a project's HTML base. */
+    private fun buildFormat(p: Project, format: String) {
+        if (ConvertBus.running) { toast("Already running."); return }
+        if (p.entries().isEmpty()) { toast("Сначала скачайте HTML-базу."); return }
+        val intent = Intent(this, ConvertService::class.java).apply {
+            putExtra(ConvertService.EXTRA_MODE, if (format == "epub") "build_epub" else "build_pdf")
+            putExtra(ConvertService.EXTRA_BASE, p.base)
+            putExtra(ConvertService.EXTRA_NAME, p.name)
+            putExtra(ConvertService.EXTRA_PDF_FONT, pdfFont())
+            putExtra(ConvertService.EXTRA_PDF_VOLUME, pdfVolume())
+            putExtra(ConvertService.EXTRA_EPUB_FONT, epubFont())
+            treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
+        }
+        launchService(intent, if (format == "epub") "EPUB: ${p.name}…" else "PDF: ${p.name}…")
+    }
+
+    /** Open one of the project's produced books (PDF тома and/or the EPUB). */
     private fun openProjectBook(p: Project) {
-        val books = p.books()
+        val files = ArrayList<File>(p.books())
+        val labels = ArrayList<String>()
+        p.books().forEachIndexed { i, _ -> labels.add(if (p.books().size == 1) "PDF" else "Том ${i + 1}") }
+        if (p.epubFile.exists()) { files.add(p.epubFile); labels.add("EPUB") }
         when {
-            books.isEmpty() -> toast("No PDF yet — run Update first.")
-            books.size == 1 -> openFile(books[0])
-            else -> {
-                val labels = books.mapIndexed { i, _ -> "Том ${i + 1}" }.toTypedArray()
-                androidx.appcompat.app.AlertDialog.Builder(this)
-                    .setTitle("${p.name} — ${books.size} volumes")
-                    .setItems(labels) { _, i -> openFile(books[i]) }
-                    .setNegativeButton("Close", null)
-                    .show()
-            }
+            files.isEmpty() -> toast("Пока нет книги — соберите PDF или EPUB.")
+            files.size == 1 -> openFile(files[0])
+            else -> androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(p.name)
+                .setItems(labels.toTypedArray()) { _, i -> openFile(files[i]) }
+                .setNegativeButton("Close", null)
+                .show()
         }
     }
 
@@ -523,6 +543,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun ragChunk() = prefs.getInt("rag_chunk", 1000).coerceIn(200, 8000)
     private fun ragOverlap() = prefs.getInt("rag_overlap", 150).coerceIn(0, 2000)
     private fun autoRag() = prefs.getBoolean("auto_rag", false)
+    private fun pdfFont() = prefs.getInt("pdf_font", 14).coerceIn(8, 32)
+    private fun pdfVolume() = prefs.getInt("pdf_volume", 100).coerceIn(10, 500)
+    private fun epubFont() = prefs.getInt("epub_font", 18).coerceIn(10, 32)
 
     /** Add RAG extras to a service intent so the job uses the user's settings. */
     private fun Intent.withRag(includeAuto: Boolean): Intent {
@@ -554,31 +577,73 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         pm.show()
     }
 
-    private fun ragSettingsDialog() {
-        if (!alive()) return
+    /** A small vertical box of labelled number fields for a settings dialog. */
+    private fun settingsBox(): android.widget.LinearLayout {
         val pad = (16 * resources.displayMetrics.density).toInt()
-        val box = android.widget.LinearLayout(this).apply {
+        return android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(pad, pad, pad, 0)
         }
-        fun field(label: String, value: Int): android.widget.EditText {
-            box.addView(android.widget.TextView(this).apply { text = label })
-            return android.widget.EditText(this).apply {
-                inputType = android.text.InputType.TYPE_CLASS_NUMBER
-                setText(value.toString())
-            }.also { box.addView(it) }
-        }
-        val chunk = field("Chunk size (characters)", ragChunk())
-        val ov = field("Overlap (characters)", ragOverlap())
+    }
+    private fun android.widget.LinearLayout.numField(label: String, value: Int): android.widget.EditText {
+        addView(android.widget.TextView(this@MainActivity).apply { text = label })
+        return android.widget.EditText(this@MainActivity).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(value.toString())
+        }.also { addView(it) }
+    }
+
+    /** RAG settings; runs [onSaved] after saving (used by the "В RAG" build). */
+    private fun ragSettingsDialog(onSaved: (() -> Unit)? = null) {
+        if (!alive()) return
+        val box = settingsBox()
+        val chunk = box.numField("Chunk size (characters)", ragChunk())
+        val ov = box.numField("Overlap (characters)", ragOverlap())
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("RAG settings")
             .setView(box)
-            .setPositiveButton("Save") { _, _ ->
+            .setPositiveButton(if (onSaved != null) "Build" else "Save") { _, _ ->
                 prefs.edit()
                     .putInt("rag_chunk", chunk.text.toString().toIntOrNull() ?: 1000)
                     .putInt("rag_overlap", ov.text.toString().toIntOrNull() ?: 150)
                     .apply()
-                toast("Saved")
+                if (onSaved != null) onSaved() else toast("Saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun pdfSettingsDialog(p: Project) {
+        if (!alive()) return
+        val box = settingsBox()
+        val font = box.numField("Размер шрифта (pt)", pdfFont())
+        val vol = box.numField("Постов в томе", pdfVolume())
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Настройки PDF")
+            .setView(box)
+            .setPositiveButton("Собрать") { _, _ ->
+                prefs.edit()
+                    .putInt("pdf_font", (font.text.toString().toIntOrNull() ?: 14).coerceIn(8, 32))
+                    .putInt("pdf_volume", (vol.text.toString().toIntOrNull() ?: 100).coerceIn(10, 500))
+                    .apply()
+                buildFormat(p, "pdf")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun epubSettingsDialog(p: Project) {
+        if (!alive()) return
+        val box = settingsBox()
+        val font = box.numField("Размер шрифта (px)", epubFont())
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Настройки EPUB")
+            .setView(box)
+            .setPositiveButton("Собрать") { _, _ ->
+                prefs.edit()
+                    .putInt("epub_font", (font.text.toString().toIntOrNull() ?: 18).coerceIn(10, 32))
+                    .apply()
+                buildFormat(p, "epub")
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -644,16 +709,14 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         if (ConvertBus.running) { toast("Already running."); return }
         if (p.base.isBlank()) { toast("Project has no saved URL."); return }
         val intent = Intent(this, ConvertService::class.java).apply {
-            putExtra(ConvertService.EXTRA_MODE, "lj_project")
+            putExtra(ConvertService.EXTRA_MODE, "download")  // re-download HTML base
             putExtra(ConvertService.EXTRA_AUTO, true)        // add all new posts
             putExtra(ConvertService.EXTRA_DEEP, deep)        // full archive walk
             putExtra(ConvertService.EXTRA_BASE, p.base)
             putExtra(ConvertService.EXTRA_FROM, 1)
             putExtra(ConvertService.EXTRA_MAX, 2000)
-            putExtra(ConvertService.EXTRA_CLEAN, cbClean.isChecked)
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
-        intent.withRag(true)
         launchService(intent, if (deep) "Deep rescan: ${p.name}…" else "Updating ${p.name}…")
     }
 
@@ -779,8 +842,11 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
 
     override fun onDone(ok: Boolean, book: File?) {
         setBusy(false)
-        txtStatus.text = if (ok && book != null)
-            "Done — ${book.name} (${book.length() / 1024} KB)" else "Failed."
+        txtStatus.text = when {
+            ok && book != null -> "Готово — ${book.name} (${book.length() / 1024} KB)"
+            ok -> "HTML-база готова. Откройте проект → В PDF / EPUB / RAG."
+            else -> "Ошибка."
+        }
         btnOpen.isEnabled = ok && book != null
         if (ok) { val t = maxOf(ConvertBus.total, 1); setGauge(t, t) }   // 100 %
     }
