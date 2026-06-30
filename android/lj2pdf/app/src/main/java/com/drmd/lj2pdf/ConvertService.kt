@@ -58,6 +58,10 @@ class ConvertService : Service() {
         const val EXTRA_RAG_CHUNK = "ragChunk"
         const val EXTRA_RAG_OVERLAP = "ragOverlap"
         const val EXTRA_AUTO_RAG = "autoRag"   // also export RAG right after archiving
+        const val EXTRA_FORMAT = "format"      // "pdf" | "epub"
+        const val EXTRA_PDF_FONT = "pdfFont"   // body font size (pt)
+        const val EXTRA_PDF_VOLUME = "pdfVolume" // posts per том
+        const val EXTRA_EPUB_FONT = "epubFont"
         private const val RAG_CHUNK = 1000
         private const val RAG_OVERLAP = 150
         // Split big blogs: 100 posts = 1 PDF volume, so each merge only loads
@@ -113,6 +117,8 @@ class ConvertService : Service() {
                 if (mode == "rag") { runRag(intent, name, tree); return@launch }
                 if (mode == "tg_rag") { runTgRag(intent, name, tree); return@launch }
                 if (mode == "download") { runDownload(intent); return@launch }
+                if (mode == "build_pdf") { runBuildPdf(intent, tree); return@launch }
+                if (mode == "build_epub") { runBuildEpub(intent, tree); return@launch }
                 val r = WebViewPdfRenderer(this@ConvertService) { line -> ConvertBus.log(line) }
                 renderer = r
                 when (mode) {
@@ -182,6 +188,46 @@ class ConvertService : Service() {
         project.saveEntries(finalEntries)
         ConvertBus.log("[download] HTML base ready: ${finalEntries.size} post(s)")
         finish(true, null)
+    }
+
+    // ===================== STAGE 2: build PDF from the base ===============
+
+    private suspend fun runBuildPdf(intent: Intent, tree: String?) {
+        val baseIn = (intent.getStringExtra(EXTRA_BASE) ?: "").trimEnd('/')
+        if (baseIn.isEmpty()) { finish(false, null); return }
+        val project = Projects.forBase(this, baseIn)
+        val entries = project.entries()
+        if (entries.isEmpty()) {
+            ConvertBus.log("[pdf] no HTML base — download first"); finish(false, null); return
+        }
+        val fontSize = intent.getIntExtra(EXTRA_PDF_FONT, 14).coerceIn(8, 32).toFloat()
+        val volume = intent.getIntExtra(EXTRA_PDF_VOLUME, VOLUME_SIZE).coerceIn(10, 500)
+        val rendered = PdfRenderer2.renderAll(project, entries, fontSize)
+        if (rendered.isEmpty() || ConvertBus.cancelRequested) { finish(false, null); return }
+        val book = mergeProject(project, rendered, tree, volume)
+        finish(book != null, book)
+    }
+
+    // ===================== STAGE 2: build EPUB from the base ==============
+
+    private suspend fun runBuildEpub(intent: Intent, tree: String?) {
+        val baseIn = (intent.getStringExtra(EXTRA_BASE) ?: "").trimEnd('/')
+        if (baseIn.isEmpty()) { finish(false, null); return }
+        val project = Projects.forBase(this, baseIn)
+        val entries = project.entries()
+        if (entries.isEmpty()) {
+            ConvertBus.log("[epub] no HTML base — download first"); finish(false, null); return
+        }
+        val font = intent.getIntExtra(EXTRA_EPUB_FONT, 18).coerceIn(10, 32)
+        ConvertBus.progress(0, entries.size, "Building EPUB…")
+        nm.notify(NID, progressNotif("Building EPUB…", 0, 0, true))
+        val out = project.epubFile
+        val ok = withContext(Dispatchers.IO) {
+            try { EpubBuilder.build(project, entries, out, font) }
+            catch (t: Throwable) { ConvertBus.log("[epub] error: ${t.message}"); false }
+        }
+        if (ok && tree != null) copyToTree(out, tree, "${project.name}.epub", "application/epub+zip")
+        finish(ok, if (ok) out else null)
     }
 
     // ===================== PROJECT (archive + update) =====================
@@ -498,7 +544,7 @@ class ConvertService : Service() {
      * book to open (volume 1, or the single book.pdf), or null on failure.
      */
     private suspend fun mergeProject(
-        project: Project, entries: List<PostEntry>, tree: String?
+        project: Project, entries: List<PostEntry>, tree: String?, volumeSize: Int = VOLUME_SIZE
     ): File? {
         val valid = entries.filter { project.postPdf(it.id).let { f -> f.exists() && f.length() > 0 } }
         if (valid.isEmpty()) return null
@@ -508,7 +554,7 @@ class ConvertService : Service() {
         project.bookFile.delete()
         project.volumeFiles().forEach { it.delete() }
 
-        val chunks = valid.chunked(VOLUME_SIZE)
+        val chunks = valid.chunked(volumeSize)
         val single = chunks.size <= 1
 
         return withContext(Dispatchers.IO) {

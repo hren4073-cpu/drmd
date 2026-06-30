@@ -3,6 +3,7 @@ package com.drmd.lj2pdf
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import java.io.File
 
 /**
@@ -35,9 +36,7 @@ object RagExporter {
                     if (ConvertBus.cancelRequested) return docs
                     done++
                     progress(done, total, "RAG: ${p.name} — $done/$total")
-                    val pdf = p.postPdf(e.id)
-                    if (!pdf.exists() || pdf.length() == 0L) continue
-                    val text = extractText(pdf)
+                    val text = extractText(p, e.id)
                     if (text.isBlank()) continue
                     val chunks = chunk(text, chunkSize, overlap)
                     for ((k, c) in chunks.withIndex()) {
@@ -59,13 +58,25 @@ object RagExporter {
         return docs
     }
 
-    private fun extractText(pdf: File): String =
-        try {
+    /** Prefer the downloaded HTML base (clean text); fall back to the post PDF. */
+    private fun extractText(p: Project, id: String): String {
+        val html = p.postHtml(id)
+        if (html.exists() && html.length() > 0) {
+            try {
+                return Jsoup.parse(html, "UTF-8").body()?.text().orEmpty()
+            } catch (t: Throwable) {
+                ConvertBus.log("[rag] html parse failed for ${html.name}: ${t.message}")
+            }
+        }
+        val pdf = p.postPdf(id)
+        if (!pdf.exists() || pdf.length() == 0L) return ""
+        return try {
             PDDocument.load(pdf).use { PDFTextStripper().getText(it) }
         } catch (t: Throwable) {
             ConvertBus.log("[rag] text extract failed for ${pdf.name}: ${t.message}")
             ""
         }
+    }
 
     /** Split into ~[size]-char chunks on whitespace, overlapping by [overlap]. */
     fun chunk(raw: String, size: Int, overlap: Int): List<String> {
