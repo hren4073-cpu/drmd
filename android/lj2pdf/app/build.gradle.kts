@@ -12,8 +12,8 @@ android {
         minSdk = 21
         // 33 (not 34) so the foreground service needs no Android-14 FGS type.
         targetSdk = 33
-        versionCode = 5
-        versionName = "3.1"
+        versionCode = 6
+        versionName = "3.2"
     }
 
     // A committed, fixed debug keystore so EVERY build (CI or local) is signed

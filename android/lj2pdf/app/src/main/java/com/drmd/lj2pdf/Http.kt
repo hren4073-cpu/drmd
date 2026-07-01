@@ -5,8 +5,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.ConnectionPool
 import okhttp3.EventListener
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import java.util.concurrent.TimeUnit
@@ -79,6 +81,19 @@ object Http {
     /** UTF-8 string body of [url], or null. */
     suspend fun getString(url: String): String? =
         getBytes(url)?.toString(Charsets.UTF_8)
+
+    /** POST a JSON body to [url] and return the response string (for the translator). */
+    suspend fun postJson(url: String, json: String, headers: Map<String, String> = emptyMap()): String? =
+        withContext(Dispatchers.IO) {
+            try {
+                val body = json.toRequestBody("application/json; charset=utf-8".toMediaType())
+                val b = Request.Builder().url(url).post(body).header("User-Agent", UA)
+                headers.forEach { (k, v) -> b.header(k, v) }
+                client.newCall(b.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) null else resp.body?.string()
+                }
+            } catch (_: Throwable) { null }
+        }
 
     /** Parsed jsoup [Document] with [url] as base URI (for absUrl), or null. */
     suspend fun doc(url: String): Document? =

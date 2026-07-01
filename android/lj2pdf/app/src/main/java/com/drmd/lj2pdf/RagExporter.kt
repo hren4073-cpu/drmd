@@ -20,11 +20,17 @@ import java.io.File
  */
 object RagExporter {
 
-    /** @return number of documents written. Output is JSONL at [outFile]. */
+    /**
+     * @return number of documents written. Output is JSONL at [outFile].
+     * [engine] = "jsonl" (flat) or "mempalace" (hierarchical Wings/Halls/Rooms
+     * bundle a PC MemPalace install can ingest — one NDJSON record per chunk).
+     */
     fun export(
         projects: List<Project>, outFile: File, chunkSize: Int, overlap: Int,
+        engine: String = "jsonl",
         progress: (done: Int, total: Int, status: String) -> Unit
     ): Int {
+        val mempalace = engine == "mempalace"
         val total = projects.sumOf { it.entries().size }
         var done = 0
         var docs = 0
@@ -41,12 +47,22 @@ object RagExporter {
                     val chunks = chunk(text, chunkSize, overlap)
                     for ((k, c) in chunks.withIndex()) {
                         val o = JSONObject()
-                        o.put("source", p.name)
-                        o.put("id", e.id)
-                        o.put("title", e.title)
-                        o.put("url", e.permalink)
-                        o.put("chunk", k)
-                        o.put("text", c)
+                        if (mempalace) {
+                            // Spatial hierarchy: Wing=blog, Hall=posts, Room=post.
+                            o.put("wing", p.name)
+                            o.put("hall", "posts")
+                            o.put("room", e.title.ifBlank { "post_${e.id}" })
+                            o.put("drawer", "${e.id}#$k")
+                            o.put("url", e.permalink)
+                            o.put("text", c)
+                        } else {
+                            o.put("source", p.name)
+                            o.put("id", e.id)
+                            o.put("title", e.title)
+                            o.put("url", e.permalink)
+                            o.put("chunk", k)
+                            o.put("text", c)
+                        }
                         w.append(o.toString()).append('\n')
                         chunksOut++
                     }

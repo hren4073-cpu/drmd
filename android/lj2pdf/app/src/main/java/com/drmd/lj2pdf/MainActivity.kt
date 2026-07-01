@@ -245,7 +245,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             }
         }
 
-        intent.withRag(true).withPerf()
+        intent.withRag(true).withPerf().withAutoBuild()
         launchService(intent, "Starting…")
     }
 
@@ -553,14 +553,46 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun connTimeout() = prefs.getInt("conn_timeout", 25000).coerceIn(5000, 120000)
     private fun imgOn() = prefs.getBoolean("img_on", true)
     private fun imgMax() = prefs.getInt("img_max", 0).coerceIn(0, 6000)
+    // download mode: 0=Авто 1=Продвинутый 2=Мастер; content selector override
+    private fun dlMode() = prefs.getInt("dl_mode", 0).coerceIn(0, 2)
+    private fun contentSel() = prefs.getString("content_sel", "").orEmpty()
+    private fun defFormat() = prefs.getString("def_format", "pdf").orEmpty()
+    private fun autoBuild() = prefs.getBoolean("auto_build", false)
+    private fun ragEngine() = prefs.getString("rag_engine", "jsonl").orEmpty()
+    private fun trOn() = prefs.getBoolean("tr_on", false)
+    private fun trTarget() = prefs.getString("tr_target", "ru").orEmpty()
+    private fun trEndpoint() = prefs.getString("tr_endpoint", "").orEmpty()
+    private fun trKey() = prefs.getString("tr_key", "").orEmpty()
+    private fun trEngine() = prefs.getString("tr_engine", "libre").orEmpty()
 
-    /** Add performance / network settings to any download or build intent. */
+    /** Add performance / network / engine settings to a download or build intent. */
     private fun Intent.withPerf(): Intent {
         putExtra(ConvertService.EXTRA_DL_THREADS, dlThreads())
         putExtra(ConvertService.EXTRA_CPU_THREADS, cpuThreads())
         putExtra(ConvertService.EXTRA_CONN_TIMEOUT, connTimeout())
         putExtra(ConvertService.EXTRA_IMG_ON, imgOn())
         putExtra(ConvertService.EXTRA_IMG_MAX, imgMax())
+        putExtra(ConvertService.EXTRA_RAG_ENGINE, ragEngine())
+        if (dlMode() > 0 && contentSel().isNotBlank())
+            putExtra(ConvertService.EXTRA_CONTENT_SEL, contentSel())
+        putExtra(ConvertService.EXTRA_TR_ON, trOn())
+        putExtra(ConvertService.EXTRA_TR_TARGET, trTarget())
+        putExtra(ConvertService.EXTRA_TR_ENDPOINT, trEndpoint())
+        putExtra(ConvertService.EXTRA_TR_KEY, trKey())
+        putExtra(ConvertService.EXTRA_TR_ENGINE, trEngine())
+        return this
+    }
+
+    /** Extra applied only to a download intent: chain-build the default format. */
+    private fun Intent.withAutoBuild(): Intent {
+        if (autoBuild()) {
+            putExtra(ConvertService.EXTRA_AUTO_BUILD, defFormat())
+            putExtra(ConvertService.EXTRA_PDF_FONT, pdfFont())
+            putExtra(ConvertService.EXTRA_PDF_VOLUME, pdfVolume())
+            putExtra(ConvertService.EXTRA_EPUB_FONT, epubFont())
+            putExtra(ConvertService.EXTRA_RAG_CHUNK, ragChunk())
+            putExtra(ConvertService.EXTRA_RAG_OVERLAP, ragOverlap())
+        }
         return this
     }
 
@@ -572,28 +604,178 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         return this
     }
 
+    /** The "⋮" hub — a single entry point to every settings category. */
     private fun showMore(anchor: View) {
-        val pm = android.widget.PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "RAG settings (chunk / overlap)")
-        pm.menu.add(0, 4, 0, "Производительность / сеть")
-        pm.menu.add(0, 2, 0, "Auto-RAG after archive").apply {
-            isCheckable = true; isChecked = autoRag()
-        }
-        pm.menu.add(0, 3, 0, "About / roadmap")
-        pm.setOnMenuItemClickListener { mi ->
-            when (mi.itemId) {
-                1 -> { ragSettingsDialog(); true }
-                4 -> { perfSettingsDialog(); true }
-                2 -> {
-                    prefs.edit().putBoolean("auto_rag", !autoRag()).apply()
-                    toast("Auto-RAG after archive: ${if (autoRag()) "on" else "off"}")
-                    true
+        if (!alive()) return
+        val items = arrayOf(
+            "Сеть и скорость",
+            "Профиль скорости",
+            "Режим загрузки",
+            "Формат по умолчанию",
+            "Настройки PDF",
+            "Настройки EPUB",
+            "Настройки RAG",
+            "ИИ-переводчик",
+            if (autoRag()) "Авто-RAG после архива: вкл" else "Авто-RAG после архива: выкл",
+            "Сбросить настройки",
+            "О программе"
+        )
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Настройки")
+            .setItems(items) { _, i ->
+                when (i) {
+                    0 -> perfSettingsDialog()
+                    1 -> profileDialog()
+                    2 -> dlModeDialog()
+                    3 -> defaultFormatDialog()
+                    4 -> pdfSettingsDialog()
+                    5 -> epubSettingsDialog()
+                    6 -> ragSettingsDialog()
+                    7 -> translatorDialog()
+                    8 -> {
+                        prefs.edit().putBoolean("auto_rag", !autoRag()).apply()
+                        toast("Авто-RAG: ${if (autoRag()) "вкл" else "выкл"}")
+                    }
+                    9 -> resetSettings()
+                    10 -> showAbout()
                 }
-                3 -> { showAbout(); true }
-                else -> false
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    /** Aggressiveness preset: sets the download-thread count. */
+    private fun profileDialog() {
+        if (!alive()) return
+        val labels = arrayOf("Бережно (4)", "Баланс (8)", "Агрессивно (16)")
+        val vals = intArrayOf(4, 8, 16)
+        val cur = vals.indexOf(dlThreads()).let { if (it < 0) 1 else it }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Профиль скорости")
+            .setSingleChoiceItems(labels, cur) { d, i ->
+                prefs.edit().putInt("dl_threads", vals[i]).apply()
+                toast("Потоков: ${vals[i]}")
+                d.dismiss()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun dlModeDialog() {
+        if (!alive()) return
+        val labels = arrayOf(
+            "Авто (свободный парсинг)",
+            "Продвинутый (свой CSS-селектор)",
+            "Мастер (шаблон вручную)"
+        )
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Режим загрузки")
+            .setSingleChoiceItems(labels, dlMode()) { d, i ->
+                prefs.edit().putInt("dl_mode", i).apply()
+                d.dismiss()
+                if (i > 0) contentSelDialog()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun contentSelDialog() {
+        val box = settingsBox()
+        val sel = box.textField("CSS-селектор содержимого (напр. article, .entry-content)", contentSel())
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Селектор содержимого")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit().putString("content_sel", sel.text.toString().trim()).apply()
+                toast("Saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun defaultFormatDialog() {
+        if (!alive()) return
+        val vals = arrayOf("pdf", "epub", "rag")
+        val labels = arrayOf("PDF", "EPUB", "RAG")
+        val box = settingsBox()
+        val rg = android.widget.RadioGroup(this)
+        labels.forEachIndexed { i, l ->
+            rg.addView(android.widget.RadioButton(this).apply { id = i + 1; text = l })
+        }
+        rg.check(vals.indexOf(defFormat()).coerceAtLeast(0) + 1)
+        box.addView(rg)
+        val cb = android.widget.CheckBox(this).apply {
+            text = "Собирать сразу после скачивания"; isChecked = autoBuild()
+        }
+        box.addView(cb)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Формат по умолчанию")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val fmt = vals[(rg.checkedRadioButtonId - 1).coerceIn(0, 2)]
+                prefs.edit()
+                    .putString("def_format", fmt)
+                    .putBoolean("auto_build", cb.isChecked)
+                    .apply()
+                toast("Формат: ${fmt.uppercase()}${if (cb.isChecked) " (авто)" else ""}")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun translatorDialog() {
+        if (!alive()) return
+        val box = settingsBox()
+        val on = android.widget.CheckBox(this).apply {
+            text = "Переводить зарубежные сайты (медленнее)"; isChecked = trOn()
+        }
+        box.addView(on)
+        val target = box.textField("Язык перевода (код, напр. ru)", trTarget())
+        val endpoint = box.textField("Endpoint API (LibreTranslate/DeepL/свой)", trEndpoint())
+        val key = box.textField("API-ключ (если нужен)", trKey())
+        val engineLabels = arrayOf("libre", "deepl", "custom")
+        var engineIdx = engineLabels.indexOf(trEngine()).coerceAtLeast(0)
+        box.addView(android.widget.TextView(this).apply { text = "Движок:" })
+        val spinner = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item, engineLabels
+            )
+            setSelection(engineIdx)
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) { engineIdx = pos }
+                override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
             }
         }
-        pm.show()
+        box.addView(spinner)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("ИИ-переводчик")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit()
+                    .putBoolean("tr_on", on.isChecked)
+                    .putString("tr_target", target.text.toString().trim().ifBlank { "ru" })
+                    .putString("tr_endpoint", endpoint.text.toString().trim())
+                    .putString("tr_key", key.text.toString().trim())
+                    .putString("tr_engine", engineLabels[engineIdx])
+                    .apply()
+                toast("Saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun resetSettings() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Сбросить настройки?")
+            .setMessage("Вернуть все настройки к значениям по умолчанию (проекты и книги не трогаем).")
+            .setPositiveButton("Сбросить") { _, _ ->
+                val tree = prefs.getString("tree", null)
+                prefs.edit().clear().apply()
+                if (tree != null) prefs.edit().putString("tree", tree).apply()
+                toast("Сброшено")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /** A small vertical box of labelled number fields for a settings dialog. */
@@ -611,6 +793,13 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             setText(value.toString())
         }.also { addView(it) }
     }
+    private fun android.widget.LinearLayout.textField(label: String, value: String): android.widget.EditText {
+        addView(android.widget.TextView(this@MainActivity).apply { text = label })
+        return android.widget.EditText(this@MainActivity).apply {
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            setText(value)
+        }.also { addView(it) }
+    }
 
     /** RAG settings; runs [onSaved] after saving (used by the "В RAG" build). */
     private fun ragSettingsDialog(onSaved: (() -> Unit)? = null) {
@@ -618,13 +807,29 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         val box = settingsBox()
         val chunk = box.numField("Chunk size (characters)", ragChunk())
         val ov = box.numField("Overlap (characters)", ragOverlap())
+        box.addView(android.widget.TextView(this).apply { text = "Движок RAG:" })
+        val engines = arrayOf("jsonl", "mempalace")
+        var engIdx = engines.indexOf(ragEngine()).coerceAtLeast(0)
+        val spinner = android.widget.Spinner(this).apply {
+            adapter = android.widget.ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                arrayOf("JSONL (плоский)", "MemPalace (иерархия)")
+            )
+            setSelection(engIdx)
+            onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) { engIdx = pos }
+                override fun onNothingSelected(p: android.widget.AdapterView<*>?) {}
+            }
+        }
+        box.addView(spinner)
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("RAG settings")
+            .setTitle("Настройки RAG")
             .setView(box)
             .setPositiveButton(if (onSaved != null) "Build" else "Save") { _, _ ->
                 prefs.edit()
                     .putInt("rag_chunk", chunk.text.toString().toIntOrNull() ?: 1000)
                     .putInt("rag_overlap", ov.text.toString().toIntOrNull() ?: 150)
+                    .putString("rag_engine", engines[engIdx])
                     .apply()
                 if (onSaved != null) onSaved() else toast("Saved")
             }
@@ -632,7 +837,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             .show()
     }
 
-    private fun pdfSettingsDialog(p: Project) {
+    private fun pdfSettingsDialog(p: Project? = null) {
         if (!alive()) return
         val box = settingsBox()
         val font = box.numField("Размер шрифта (pt)", pdfFont())
@@ -640,29 +845,29 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Настройки PDF")
             .setView(box)
-            .setPositiveButton("Собрать") { _, _ ->
+            .setPositiveButton(if (p != null) "Собрать" else "Save") { _, _ ->
                 prefs.edit()
                     .putInt("pdf_font", (font.text.toString().toIntOrNull() ?: 14).coerceIn(8, 32))
                     .putInt("pdf_volume", (vol.text.toString().toIntOrNull() ?: 100).coerceIn(10, 500))
                     .apply()
-                buildFormat(p, "pdf")
+                if (p != null) buildFormat(p, "pdf") else toast("Saved")
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun epubSettingsDialog(p: Project) {
+    private fun epubSettingsDialog(p: Project? = null) {
         if (!alive()) return
         val box = settingsBox()
         val font = box.numField("Размер шрифта (px)", epubFont())
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Настройки EPUB")
             .setView(box)
-            .setPositiveButton("Собрать") { _, _ ->
+            .setPositiveButton(if (p != null) "Собрать" else "Save") { _, _ ->
                 prefs.edit()
                     .putInt("epub_font", (font.text.toString().toIntOrNull() ?: 18).coerceIn(10, 32))
                     .apply()
-                buildFormat(p, "epub")
+                if (p != null) buildFormat(p, "epub") else toast("Saved")
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -737,6 +942,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                 ConvertService.EXTRA_RAG_DIRS,
                 ArrayList(withPosts.map { it.dir.absolutePath })
             )
+            putExtra(ConvertService.EXTRA_RAG_ENGINE, ragEngine())
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }
         intent.withRag(false)
@@ -763,7 +969,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_FROM, 1)
             putExtra(ConvertService.EXTRA_MAX, 2000)
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
-        }.withPerf()
+        }.withPerf().withAutoBuild()
         launchService(intent, if (deep) "Deep rescan: ${p.name}…" else "Updating ${p.name}…")
     }
 

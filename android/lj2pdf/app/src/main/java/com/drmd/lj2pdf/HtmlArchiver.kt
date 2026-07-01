@@ -41,17 +41,20 @@ object HtmlArchiver {
      */
     suspend fun download(
         project: Project, permalinks: List<String>,
-        parallelism: Int = 8, imgOn: Boolean = true, imgMax: Int = 0
+        parallelism: Int = 8, imgOn: Boolean = true, imgMax: Int = 0,
+        contentSel: String = "",
+        tr: Translator.Config = Translator.Config(false, "ru", "", "", "libre")
     ): List<PostEntry> {
         val total = permalinks.size
         val done = AtomicInteger(0)
+        if (tr.active) ConvertBus.log("[html] translation ON → ${tr.target} (slower)")
         ConvertBus.log("[html] downloading $total post(s) on ${parallelism.coerceIn(1, 32)} threads…")
         val entries = permalinks.mapPar(parallelism.coerceIn(1, 32)) { perma ->
             if (ConvertBus.cancelRequested) return@mapPar null
             val id = Projects.idOf(perma)
             val entry = try {
                 if (project.htmlReady(id)) reuse(project, id, perma)
-                else fetchOne(project, id, perma, imgOn, imgMax)
+                else fetchOne(project, id, perma, imgOn, imgMax, contentSel, tr)
             } catch (t: Throwable) {
                 ConvertBus.log("[html] FAIL $perma: ${t.message}"); null
             }
@@ -69,23 +72,41 @@ object HtmlArchiver {
     }
 
     private suspend fun fetchOne(
-        project: Project, id: String, perma: String, imgOn: Boolean, imgMax: Int
+        project: Project, id: String, perma: String, imgOn: Boolean, imgMax: Int,
+        contentSel: String, tr: Translator.Config
     ): PostEntry? {
         val doc = Http.doc(perma) ?: return null
-        val title = TITLE_SELECTORS.firstNotNullOfOrNull { sel ->
+        var title = TITLE_SELECTORS.firstNotNullOfOrNull { sel ->
             doc.selectFirst(sel)?.text()?.trim()?.ifBlank { null }
         } ?: doc.title().trim().ifBlank { "Пост $id" }
 
-        val content = CONTENT_SELECTORS.firstNotNullOfOrNull { sel ->
-            doc.selectFirst(sel)?.takeIf { it.text().trim().length > 20 }
-        } ?: doc.body() ?: return null
+        val content = (if (contentSel.isNotBlank()) doc.selectFirst(contentSel) else null)
+            ?: CONTENT_SELECTORS.firstNotNullOfOrNull { sel ->
+                doc.selectFirst(sel)?.takeIf { it.text().trim().length > 20 }
+            } ?: doc.body() ?: return null
 
         content.select(STRIP).remove()
         if (imgOn) downloadImages(project, id, content, imgMax)
         else content.select("img").remove()
 
+        if (tr.active) {
+            title = Translator.translate(tr, title)
+            translateBlocks(content, tr)
+        }
+
         project.postHtml(id).writeText(wrap(title, content.html()))
         return PostEntry(id, perma, title)
+    }
+
+    /** Translate text-only block elements in place (keeps images/structure). */
+    private suspend fun translateBlocks(content: Element, tr: Translator.Config) {
+        val blocks = content.select("p,h1,h2,h3,h4,h5,li,blockquote,figcaption")
+            .filter { it.select("img").isEmpty() && it.text().isNotBlank() }
+        blocks.mapPar(2) { el ->
+            if (ConvertBus.cancelRequested) return@mapPar
+            val t = Translator.translate(tr, el.text())
+            synchronized(content) { el.text(t) }
+        }
     }
 
     /** Download every <img> in [content] (in parallel) and rewrite src locally. */

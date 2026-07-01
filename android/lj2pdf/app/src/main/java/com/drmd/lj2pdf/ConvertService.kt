@@ -73,6 +73,15 @@ class ConvertService : Service() {
         const val EXTRA_CONN_TIMEOUT = "connTimeout" // ms
         const val EXTRA_IMG_ON = "imgOn"             // download images?
         const val EXTRA_IMG_MAX = "imgMax"           // max image dimension px
+        const val EXTRA_RAG_ENGINE = "ragEngine"     // "jsonl" | "mempalace"
+        const val EXTRA_AUTO_BUILD = "autoBuild"     // "" | "pdf" | "epub" | "rag"
+        const val EXTRA_CONTENT_SEL = "contentSel"   // override content CSS selector
+        // Translator (external API): on/off, target lang, endpoint, key, engine.
+        const val EXTRA_TR_ON = "trOn"
+        const val EXTRA_TR_TARGET = "trTarget"
+        const val EXTRA_TR_ENDPOINT = "trEndpoint"
+        const val EXTRA_TR_KEY = "trKey"
+        const val EXTRA_TR_ENGINE = "trEngine"       // "libre" | "deepl" | "custom"
         private const val RAG_CHUNK = 1000
         private const val RAG_OVERLAP = 150
         // Split big blogs: 100 posts = 1 PDF volume, so each merge only loads
@@ -199,10 +208,17 @@ class ConvertService : Service() {
             toGet = scanned.take(count)
         }
 
-        val dlThreads = intent.getIntExtra(EXTRA_DL_THREADS, 8)
         val imgOn = intent.getBooleanExtra(EXTRA_IMG_ON, true)
         val imgMax = intent.getIntExtra(EXTRA_IMG_MAX, 0)
-        val fresh = HtmlArchiver.download(project, toGet, dlThreads, imgOn, imgMax)
+        val contentSel = intent.getStringExtra(EXTRA_CONTENT_SEL) ?: ""
+        val tr = Translator.Config(
+            on = intent.getBooleanExtra(EXTRA_TR_ON, false),
+            target = intent.getStringExtra(EXTRA_TR_TARGET) ?: "ru",
+            endpoint = intent.getStringExtra(EXTRA_TR_ENDPOINT) ?: "",
+            key = intent.getStringExtra(EXTRA_TR_KEY) ?: "",
+            engine = intent.getStringExtra(EXTRA_TR_ENGINE) ?: "libre"
+        )
+        val fresh = HtmlArchiver.download(project, toGet, par, imgOn, imgMax, contentSel, tr)
         // Rebuild the index: full/deep scans use archive order; updates prepend.
         val byId = (fresh + existing).associateBy { it.id }
         val finalEntries = if (existing.isEmpty() || deep)
@@ -211,7 +227,32 @@ class ConvertService : Service() {
             fresh + existing.filter { it.id !in fresh.map { f -> f.id }.toSet() }
         project.saveEntries(finalEntries)
         ConvertBus.log("[download] HTML base ready: ${finalEntries.size} post(s)")
-        finish(true, null)
+
+        // Optional: chain straight into a build using the default format.
+        val tree = intent.getStringExtra(EXTRA_TREE)
+        when (intent.getStringExtra(EXTRA_AUTO_BUILD) ?: "") {
+            "pdf" -> runBuildPdf(intent, tree)
+            "epub" -> runBuildEpub(intent, tree)
+            "rag" -> runRagForProject(project, intent, tree)
+            else -> finish(true, null)
+        }
+    }
+
+    /** RAG export for a single just-downloaded project (auto-build path). */
+    private suspend fun runRagForProject(project: Project, intent: Intent, tree: String?) {
+        val chunk = intent.getIntExtra(EXTRA_RAG_CHUNK, RAG_CHUNK)
+        val overlap = intent.getIntExtra(EXTRA_RAG_OVERLAP, RAG_OVERLAP)
+        val engine = intent.getStringExtra(EXTRA_RAG_ENGINE) ?: "jsonl"
+        val out = File(getExternalFilesDir(null), "${project.name}_rag.jsonl")
+        val n = withContext(Dispatchers.IO) {
+            try {
+                RagExporter.export(listOf(project), out, chunk, overlap, engine) { d, t, s ->
+                    ConvertBus.progress(d, t, s)
+                }
+            } catch (t: Throwable) { ConvertBus.log("[rag] ${t.message}"); 0 }
+        }
+        if (n > 0 && tree != null) copyToTree(out, tree, out.name, "application/json")
+        finishRag(n > 0, if (n > 0) out else null)
     }
 
     // ===================== STAGE 2: build PDF from the base ===============
@@ -630,10 +671,11 @@ class ConvertService : Service() {
         ConvertBus.log("[rag] building corpus from ${projects.size} project(s)…")
         val chunk = intent.getIntExtra(EXTRA_RAG_CHUNK, RAG_CHUNK)
         val overlap = intent.getIntExtra(EXTRA_RAG_OVERLAP, RAG_OVERLAP)
+        val engine = intent.getStringExtra(EXTRA_RAG_ENGINE) ?: "jsonl"
         val out = File(getExternalFilesDir(null), "$name.jsonl")
         val docs = withContext(Dispatchers.IO) {
             try {
-                RagExporter.export(projects, out, chunk, overlap) { d, t, s ->
+                RagExporter.export(projects, out, chunk, overlap, engine) { d, t, s ->
                     ConvertBus.progress(d, t, s)
                     nm.notify(NID, progressNotif(s, d, t, t == 0))
                 }
