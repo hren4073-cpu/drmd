@@ -1,0 +1,5 @@
+# PDFBox-Android uses reflection in places; keep it intact.
+-keep class com.tom_roush.pdfbox.** { *; }
+-keep class com.tom_roush.fontbox.** { *; }
+-dontwarn com.tom_roush.**
+-dontwarn org.apache.**

@@ -1,0 +1,18 @@
+// Top-level build file. Modernised from the 2017 original:
+// jcenter() is dead -> google()/mavenCentral(); AGP bumped for AndroidX.
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:7.4.2'
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}

@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Демонстрация: flex, grid и динамический JS</title>
+  <style>
+    :root { --accent: #2563eb; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      margin: 0;
+      color: #1f2937;
+      background: linear-gradient(135deg, #eff6ff, #ffffff);
+    }
+    header {
+      background: var(--accent);
+      color: #fff;
+      padding: 32px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 { margin: 0; font-size: 28px; }
+    main { padding: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.08);
+    }
+    .flexrow { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+    .badge { background: var(--accent); color:#fff; padding: 6px 12px; border-radius: 999px; font-size: 13px; }
+    @media print { header { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Отчёт по вёрстке</h1>
+    <span id="clock">…</span>
+  </header>
+  <main>
+    <p>Эта страница проверяет flexbox, CSS grid, фоновые градиенты и JS-рендеринг.</p>
+    <div class="grid">
+      <div class="card"><h3>Flexbox</h3><p>Гибкое выравнивание элементов.</p></div>
+      <div class="card"><h3>Grid</h3><p>Сетка из трёх колонок.</p></div>
+      <div class="card"><h3>Шрифты</h3><p>Системные и веб-шрифты.</p></div>
+    </div>
+    <div class="flexrow" id="tags"></div>
+  </main>
+  <script>
+    // Динамический контент: должен попасть в PDF.
+    document.getElementById('clock').textContent =
+      'Сгенерировано: ' + new Date().toLocaleString('ru-RU');
+    const tags = ['JavaScript', 'DOM', 'Динамика', 'PDF'];
+    const box = document.getElementById('tags');
+    tags.forEach(t => {
+      const s = document.createElement('span');
+      s.className = 'badge';
+      s.textContent = t;
+      box.appendChild(s);
+    });
+  </script>
+</body>
+</html>

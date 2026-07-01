@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.exe
+chromium/
+*.log
+*.pdf
+!examples/**/*.pdf

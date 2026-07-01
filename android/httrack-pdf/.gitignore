@@ -1,0 +1,9 @@
+workspace.xml
+*.iml
+/.gradle
+/local.properties
+/build
+/.idea
+/app/.externalNativeBuild
+/app/.cxx
+/app/build
