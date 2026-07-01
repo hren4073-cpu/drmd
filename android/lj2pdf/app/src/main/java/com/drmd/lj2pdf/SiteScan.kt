@@ -8,15 +8,16 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import org.jsoup.nodes.Document
 import java.util.Calendar
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Enumerates a blog's post permalinks over plain HTTP + jsoup (no WebView).
- * LiveJournal uses its calendar/year/month archive; everything else falls back
- * to a generic same-host link crawl that follows pagination.
+ * Enumerates a blog's post permalinks over pooled HTTP + jsoup (no WebView).
+ * LiveJournal is scanned in fully-parallel WAVES (years → months → days), each
+ * wave fetched with up to [par] concurrent requests, so a whole large blog is
+ * mapped in a couple of minutes. Everything else falls back to a generic
+ * same-host link crawl that follows pagination.
  */
 object SiteScan {
-
-    private const val SCAN_PAR = 6              // parallel archive-page fetches
 
     private fun hostOf(base: String) = (Uri.parse(base).host ?: "").lowercase()
     private fun isLj(base: String) = hostOf(base).contains("livejournal.com")
@@ -24,7 +25,7 @@ object SiteScan {
     private fun links(doc: Document): List<String> =
         doc.select("a[href]").map { it.absUrl("href") }.filter { it.isNotEmpty() }
 
-    /** Canonical post permalink: …/<digits>.html (drops anchors / query). */
+    /** Canonical post permalinks: …/<digits>.html (drops anchors / query). */
     private fun postPermalinks(all: List<String>, host: String): List<String> {
         val re = Regex("^(https?://([^/]+)/(\\d+))\\.html")
         val out = LinkedHashSet<String>()
@@ -39,12 +40,13 @@ object SiteScan {
     // ---- public entry points -------------------------------------------------
 
     /** Full archive scan (everything, incl. back-dated posts). */
-    suspend fun scanAll(base: String, max: Int, note: (String) -> Unit): List<String> =
-        if (isLj(base)) scanLj(base, note).take(max) else scanGeneric(base, max, note)
+    suspend fun scanAll(base: String, max: Int, par: Int, note: (String) -> Unit): List<String> =
+        if (isLj(base)) scanLj(base, par.coerceIn(1, 32), note).take(max)
+        else scanGeneric(base, max, note)
 
     /** Fast update: only the new top of the feed until a known id appears. */
     suspend fun scanNew(
-        base: String, step: Int, knownIds: Set<String>, max: Int, note: (String) -> Unit
+        base: String, step: Int, knownIds: Set<String>, max: Int, par: Int, note: (String) -> Unit
     ): List<String> {
         if (!isLj(base)) return scanGeneric(base, max, note).filter { Projects.idOf(it) !in knownIds }
         val host = hostOf(base)
@@ -69,77 +71,65 @@ object SiteScan {
         return out
     }
 
-    // ---- LiveJournal archive --------------------------------------------------
+    // ---- LiveJournal archive (parallel waves) --------------------------------
 
-    private suspend fun scanLj(base: String, note: (String) -> Unit): List<String> {
+    private suspend fun scanLj(base: String, par: Int, note: (String) -> Unit): List<String> {
         val host = hostOf(base)
         val monthRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/?$")
         val dayRe = Regex("^https?://[^/]+/(\\d{4})/(\\d{2})/(\\d{2})/?$")
         val yearRe = Regex("^https?://[^/]+/(\\d{4})/?$")
-        val monthSet = LinkedHashSet<String>()
 
-        ConvertBus.log("[scan] reading archive…")
+        ConvertBus.log("[scan] reading archive… ($par threads)")
         val cal = Http.doc("$base/calendar")?.let { links(it) } ?: emptyList()
-        cal.filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
-
+        val calMonths = cal.filter { monthRe.matches(it) }.toMutableSet()
         val curYear = Calendar.getInstance().get(Calendar.YEAR)
-        val calYears = sortedSetOf(Comparator.reverseOrder<Int>())
-        cal.filter { yearRe.matches(it) }.forEach { val y = yr(it); if (y in 1900..curYear) calYears.add(y) }
+        // Candidate years = every year the calendar links to (incl. back-dated) +
+        // a recent 30-year window as a safety net. Probed all at once.
+        val calYears = cal.filter { yearRe.matches(it) }.map { yr(it) }.filter { it in 1900..curYear }
+        val years = (calYears + (curYear - 30..curYear)).filter { it in 1900..curYear }
+            .toSortedSet(Comparator.reverseOrder())
 
-        suspend fun probeYear(y: Int): Int {
-            val before = monthSet.size
-            (Http.doc("$base/$y/")?.let { links(it) } ?: emptyList())
-                .filter { monthRe.matches(it) }.forEach { monthSet.add(it) }
-            return monthSet.size - before
-        }
-        for (y in calYears) {
-            if (ConvertBus.cancelRequested) break
-            note("Scanning archive: year $y… (${monthSet.size} months)")
-            probeYear(y)
-        }
-        var emptyRun = 0
-        var seenNonEmpty = monthSet.isNotEmpty()
-        for (y in curYear downTo 1940) {
-            if (ConvertBus.cancelRequested) break
-            if (y in calYears) continue
-            note("Scanning archive: year $y… (${monthSet.size} months)")
-            val found = probeYear(y)
-            if (found > 0) { seenNonEmpty = true; emptyRun = 0 }
-            else if (seenNonEmpty && ++emptyRun >= 8) {
-                ConvertBus.log("[scan] 8 empty years straight — stopping year probe at $y")
-                break
-            }
-        }
+        // Wave 1: all /YYYY/ pages in parallel → month links.
+        note("Scanning ${years.size} year(s)…")
+        val yearMonths = years.toList().mapPar(par) { y ->
+            if (ConvertBus.cancelRequested) emptyList()
+            else (Http.doc("$base/$y/")?.let { links(it) } ?: emptyList()).filter { monthRe.matches(it) }
+        }.flatten()
 
-        val months = monthSet.distinct().sortedByDescending { ym(it) }
+        val months = (calMonths + yearMonths).distinct().sortedByDescending { ym(it) }
         if (months.isEmpty()) {
             ConvertBus.log("[scan] no archive months — using ?skip= (may be limited)")
-            return scanNew(base, 20, emptySet(), 2000, note)
+            return scanNew(base, 20, emptySet(), 2000, par, note)
         }
         ConvertBus.log("[scan] archive has ${months.size} month(s)")
 
-        // Crawl months in parallel; each month is either post-linked or day-grouped.
-        var done = 0
-        val perMonth = months.mapPar(SCAN_PAR) { m ->
-            if (ConvertBus.cancelRequested) return@mapPar emptyList<String>()
+        // Wave 2: all /YYYY/MM/ pages in parallel → posts, or day links.
+        val monthDone = AtomicInteger(0)
+        val monthResults = months.mapPar(par) { m ->
+            if (ConvertBus.cancelRequested) return@mapPar Pair(emptyList(), emptyList<String>())
             val doc = Http.doc(m)
             val posts = doc?.let { postPermalinks(links(it), host) } ?: emptyList()
-            val result = if (posts.isNotEmpty()) posts else {
-                val days = (doc?.let { links(it) } ?: emptyList())
-                    .filter { dayRe.matches(it) }.distinct().sortedByDescending { ymd(it) }
-                days.flatMap { d ->
-                    if (ConvertBus.cancelRequested) emptyList()
-                    else Http.doc(d)?.let { postPermalinks(links(it), host) } ?: emptyList()
-                }
-            }
-            synchronized(months) { done++ }
-            ConvertBus.scanProgress(done, result.size)
-            note("Scanning archive $done/${months.size}…")
-            result
+            val days = if (posts.isEmpty())
+                (doc?.let { links(it) } ?: emptyList()).filter { dayRe.matches(it) } else emptyList()
+            val n = monthDone.incrementAndGet()
+            ConvertBus.scanProgress(n, posts.size)
+            note("Scanning months $n/${months.size}…")
+            Pair(posts, days)
         }
-        val seen = LinkedHashSet<String>()
-        perMonth.forEach { seen.addAll(it) }
-        val all = seen.toList().sortedByDescending { Projects.idOf(it).toLongOrNull() ?: 0L }
+        val directPosts = monthResults.flatMap { it.first }
+        val dayUrls = monthResults.flatMap { it.second }.distinct()
+
+        // Wave 3: day-grouped months → all /YYYY/MM/DD/ pages in parallel.
+        val dayPosts = if (dayUrls.isEmpty()) emptyList() else {
+            ConvertBus.log("[scan] ${dayUrls.size} day page(s) to open")
+            dayUrls.mapPar(par) { d ->
+                if (ConvertBus.cancelRequested) emptyList()
+                else Http.doc(d)?.let { postPermalinks(links(it), host) } ?: emptyList()
+            }.flatten()
+        }
+
+        val all = (directPosts + dayPosts).distinct()
+            .sortedByDescending { Projects.idOf(it).toLongOrNull() ?: 0L }
         ConvertBus.log("[scan] archive total: ${all.size} post(s)")
         return all
     }
@@ -204,6 +194,6 @@ object SiteScan {
 
 /** Map [this] with at most [n] concurrent suspend calls, preserving order. */
 suspend fun <T, R> Iterable<T>.mapPar(n: Int, f: suspend (T) -> R): List<R> = coroutineScope {
-    val sem = Semaphore(n)
+    val sem = Semaphore(n.coerceAtLeast(1))
     map { item -> async { sem.withPermit { f(item) } } }.awaitAll()
 }

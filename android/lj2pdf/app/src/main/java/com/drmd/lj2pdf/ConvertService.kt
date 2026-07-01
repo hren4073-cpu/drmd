@@ -173,13 +173,14 @@ class ConvertService : Service() {
         val step = if (existing.isNotEmpty()) project.step else intent.getIntExtra(EXTRA_STEP, 20)
         if (existing.isEmpty()) project.step = step
         val max = intent.getIntExtra(EXTRA_MAX, DEFAULT_MAX)
+        val par = intent.getIntExtra(EXTRA_DL_THREADS, 8)
         val note: (String) -> Unit = { s -> nm.notify(NID, progressNotif(s, 0, 0, true)) }
 
         ConvertBus.log("[download] $baseIn")
         val scanned = if (existing.isNotEmpty() && !deep)
-            SiteScan.scanNew(project.base, step, knownIds, max, note)
+            SiteScan.scanNew(project.base, step, knownIds, max, par, note)
         else
-            SiteScan.scanAll(project.base, max, note)
+            SiteScan.scanAll(project.base, max, par, note)
         if (ConvertBus.cancelRequested) { finish(false, null); return }
         if (scanned.isEmpty() && existing.isEmpty()) {
             ConvertBus.log("[download] nothing found"); finish(false, null); return
