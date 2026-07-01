@@ -68,6 +68,7 @@ class ConvertService : Service() {
         const val EXTRA_PDF_FONT = "pdfFont"   // body font size (pt)
         const val EXTRA_PDF_VOLUME = "pdfVolume" // posts per том
         const val EXTRA_EPUB_FONT = "epubFont"
+        const val EXTRA_EPUB_VOLUME = "epubVolume"   // posts per EPUB том (0 = single)
         const val EXTRA_DL_THREADS = "dlThreads"     // parallel HTTP downloads
         const val EXTRA_CPU_THREADS = "cpuThreads"   // parallel PDF/EPUB build
         const val EXTRA_CONN_TIMEOUT = "connTimeout" // ms
@@ -286,15 +287,44 @@ class ConvertService : Service() {
         }
         val font = intent.getIntExtra(EXTRA_EPUB_FONT, 18).coerceIn(10, 32)
         val cpu = intent.getIntExtra(EXTRA_CPU_THREADS, 0)
-        ConvertBus.progress(0, entries.size, "Building EPUB…")
-        nm.notify(NID, progressNotif("Building EPUB…", 0, 0, true))
-        val out = project.epubFile
-        val ok = withContext(Dispatchers.IO) {
-            try { EpubBuilder.build(project, entries, out, font, cpu) }
-            catch (t: Throwable) { ConvertBus.log("[epub] error: ${t.message}"); false }
+        val volume = intent.getIntExtra(EXTRA_EPUB_VOLUME, 0).coerceIn(0, 2000)
+
+        // Clear stale EPUB outputs from a previous (differently-sized) run.
+        project.epubFile.delete()
+        project.epubVolumeFiles().forEach { it.delete() }
+
+        val single = volume <= 0 || entries.size <= volume
+        val result = withContext(Dispatchers.IO) {
+            try {
+                if (single) {
+                    ConvertBus.progress(0, entries.size, "Building EPUB…")
+                    nm.notify(NID, progressNotif("Building EPUB…", 0, 0, true))
+                    val ok = EpubBuilder.build(project, entries, project.epubFile, font, cpu)
+                    if (ok && tree != null)
+                        copyToTree(project.epubFile, tree, "${project.name}.epub", "application/epub+zip")
+                    if (ok) project.epubFile else null
+                } else {
+                    val chunks = entries.chunked(volume)
+                    val total = chunks.size
+                    chunks.forEachIndexed { i, chunk ->
+                        val volNo = i + 1
+                        val msg = "EPUB том $volNo/$total (${chunk.size})…"
+                        ConvertBus.progress(volNo, total, msg)
+                        nm.notify(NID, progressNotif(msg, volNo, total, false))
+                        val vol = project.epubVolumeFile(volNo)
+                        val ok = EpubBuilder.build(
+                            project, chunk, vol, font, cpu,
+                            bookTitle = "${project.name} — том $volNo из $total"
+                        )
+                        if (ok && tree != null)
+                            copyToTree(vol, tree, "${project.name} — том %02d.epub".format(volNo),
+                                "application/epub+zip")
+                    }
+                    project.epubs().firstOrNull()
+                }
+            } catch (t: Throwable) { ConvertBus.log("[epub] error: ${t.message}"); null }
         }
-        if (ok && tree != null) copyToTree(out, tree, "${project.name}.epub", "application/epub+zip")
-        finish(ok, if (ok) out else null)
+        finish(result != null, result)
     }
 
     // ===================== PROJECT (archive + update) =====================

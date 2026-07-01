@@ -12,8 +12,8 @@ android {
         minSdk = 21
         // 33 (not 34) so the foreground service needs no Android-14 FGS type.
         targetSdk = 33
-        versionCode = 6
-        versionName = "3.2"
+        versionCode = 7
+        versionName = "3.3"
     }
 
     // A committed, fixed debug keystore so EVERY build (CI or local) is signed
@@ -62,4 +62,9 @@ dependencies {
     implementation("org.jsoup:jsoup:1.17.2")
     // Pooled HTTP/2 client — connection reuse + multiplexing for fast downloads.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // On-device (offline) machine translation + language id — the "local" engine.
+    implementation("com.google.mlkit:translate:17.0.3")
+    implementation("com.google.mlkit:language-id:17.0.5")
+    // await() bridge for the ML Kit Task<T> APIs from coroutines.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }

@@ -103,9 +103,10 @@ object HtmlArchiver {
         val blocks = content.select("p,h1,h2,h3,h4,h5,li,blockquote,figcaption")
             .filter { it.select("img").isEmpty() && it.text().isNotBlank() }
         blocks.mapPar(2) { el ->
-            if (ConvertBus.cancelRequested) return@mapPar
-            val t = Translator.translate(tr, el.text())
-            synchronized(content) { el.text(t) }
+            if (!ConvertBus.cancelRequested) {
+                val t = Translator.translate(tr, el.text())
+                synchronized(content) { el.text(t) }
+            }
         }
     }
 

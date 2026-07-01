@@ -24,7 +24,8 @@ object EpubBuilder {
 
     /** Build [out] from [entries]' saved HTML. @return true on success. */
     suspend fun build(
-        project: Project, entries: List<PostEntry>, out: File, fontSize: Int, parallelism: Int = 0
+        project: Project, entries: List<PostEntry>, out: File, fontSize: Int,
+        parallelism: Int = 0, bookTitle: String = ""
     ): Boolean {
         val usable = entries.filter { project.htmlReady(it.id) }
         if (usable.isEmpty()) return false
@@ -80,9 +81,10 @@ object EpubBuilder {
                 }
             }
 
+            val name = bookTitle.ifBlank { project.name }
             deflated(zos, "OEBPS/nav.xhtml", nav(navLis.toString()).toByteArray())
-            deflated(zos, "OEBPS/toc.ncx", ncx(project.name, ncxPoints.toString()).toByteArray())
-            deflated(zos, "OEBPS/content.opf", opf(project.name, manifest.toString(), spine.toString()).toByteArray())
+            deflated(zos, "OEBPS/toc.ncx", ncx(name, ncxPoints.toString()).toByteArray())
+            deflated(zos, "OEBPS/content.opf", opf(name, manifest.toString(), spine.toString()).toByteArray())
         }
         ConvertBus.log("[epub] ${chapters.size} chapter(s) → ${out.name}")
         return out.length() > 0

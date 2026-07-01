@@ -518,6 +518,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_PDF_FONT, pdfFont())
             putExtra(ConvertService.EXTRA_PDF_VOLUME, pdfVolume())
             putExtra(ConvertService.EXTRA_EPUB_FONT, epubFont())
+            putExtra(ConvertService.EXTRA_EPUB_VOLUME, epubVolume())
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
         }.withPerf()
         launchService(intent, if (format == "epub") "EPUB: ${p.name}…" else "PDF: ${p.name}…")
@@ -527,8 +528,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun openProjectBook(p: Project) {
         val files = ArrayList<File>(p.books())
         val labels = ArrayList<String>()
-        p.books().forEachIndexed { i, _ -> labels.add(if (p.books().size == 1) "PDF" else "Том ${i + 1}") }
-        if (p.epubFile.exists()) { files.add(p.epubFile); labels.add("EPUB") }
+        p.books().forEachIndexed { i, _ -> labels.add(if (p.books().size == 1) "PDF" else "PDF том ${i + 1}") }
+        val epubs = p.epubs()
+        epubs.forEachIndexed { i, _ -> files.add(epubs[i]); labels.add(if (epubs.size == 1) "EPUB" else "EPUB том ${i + 1}") }
         when {
             files.isEmpty() -> toast("Пока нет книги — соберите PDF или EPUB.")
             files.size == 1 -> openFile(files[0])
@@ -548,6 +550,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun pdfFont() = prefs.getInt("pdf_font", 14).coerceIn(8, 32)
     private fun pdfVolume() = prefs.getInt("pdf_volume", 100).coerceIn(10, 500)
     private fun epubFont() = prefs.getInt("epub_font", 18).coerceIn(10, 32)
+    private fun epubVolume() = prefs.getInt("epub_volume", 100).coerceIn(0, 2000)
     private fun dlThreads() = prefs.getInt("dl_threads", 8).coerceIn(1, 32)
     private fun cpuThreads() = prefs.getInt("cpu_threads", 0).coerceIn(0, 32)
     private fun connTimeout() = prefs.getInt("conn_timeout", 25000).coerceIn(5000, 120000)
@@ -590,6 +593,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_PDF_FONT, pdfFont())
             putExtra(ConvertService.EXTRA_PDF_VOLUME, pdfVolume())
             putExtra(ConvertService.EXTRA_EPUB_FONT, epubFont())
+            putExtra(ConvertService.EXTRA_EPUB_VOLUME, epubVolume())
             putExtra(ConvertService.EXTRA_RAG_CHUNK, ragChunk())
             putExtra(ConvertService.EXTRA_RAG_OVERLAP, ragOverlap())
         }
@@ -730,15 +734,13 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             text = "Переводить зарубежные сайты (медленнее)"; isChecked = trOn()
         }
         box.addView(on)
-        val target = box.textField("Язык перевода (код, напр. ru)", trTarget())
-        val endpoint = box.textField("Endpoint API (LibreTranslate/DeepL/свой)", trEndpoint())
-        val key = box.textField("API-ключ (если нужен)", trKey())
-        val engineLabels = arrayOf("libre", "deepl", "custom")
-        var engineIdx = engineLabels.indexOf(trEngine()).coerceAtLeast(0)
         box.addView(android.widget.TextView(this).apply { text = "Движок:" })
+        val engVals = arrayOf("mlkit", "libre", "deepl", "custom")
+        val engDisp = arrayOf("ML Kit (локально, офлайн)", "LibreTranslate (облако)", "DeepL (облако)", "Свой endpoint")
+        var engineIdx = engVals.indexOf(trEngine()).coerceAtLeast(0)
         val spinner = android.widget.Spinner(this).apply {
             adapter = android.widget.ArrayAdapter(
-                this@MainActivity, android.R.layout.simple_spinner_dropdown_item, engineLabels
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item, engDisp
             )
             setSelection(engineIdx)
             onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
@@ -747,6 +749,9 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             }
         }
         box.addView(spinner)
+        val target = box.textField("Язык перевода (код, напр. ru)", trTarget())
+        val endpoint = box.textField("Endpoint API (для облачных движков)", trEndpoint())
+        val key = box.textField("API-ключ (если нужен)", trKey())
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("ИИ-переводчик")
             .setView(box)
@@ -756,7 +761,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
                     .putString("tr_target", target.text.toString().trim().ifBlank { "ru" })
                     .putString("tr_endpoint", endpoint.text.toString().trim())
                     .putString("tr_key", key.text.toString().trim())
-                    .putString("tr_engine", engineLabels[engineIdx])
+                    .putString("tr_engine", engVals[engineIdx])
                     .apply()
                 toast("Saved")
             }
@@ -860,12 +865,14 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         if (!alive()) return
         val box = settingsBox()
         val font = box.numField("Размер шрифта (px)", epubFont())
+        val vol = box.numField("Постов в томе (0 = одна книга)", epubVolume())
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Настройки EPUB")
             .setView(box)
             .setPositiveButton(if (p != null) "Собрать" else "Save") { _, _ ->
                 prefs.edit()
                     .putInt("epub_font", (font.text.toString().toIntOrNull() ?: 18).coerceIn(10, 32))
+                    .putInt("epub_volume", (vol.text.toString().toIntOrNull() ?: 100).coerceIn(0, 2000))
                     .apply()
                 if (p != null) buildFormat(p, "epub") else toast("Saved")
             }

@@ -60,8 +60,18 @@ class Project(val dir: File) {
     fun imgDir(id: String): File = File(htmlDir, "img/$id").apply { mkdirs() }
     /** True when a post's HTML has been downloaded. */
     fun htmlReady(id: String): Boolean = postHtml(id).let { it.exists() && it.length() > 0 }
-    /** The merged EPUB book. */
+    /** The merged EPUB book (single-volume case). */
     val epubFile: File get() = File(dir, "book.epub")
+    /** EPUB volume files (large blogs split like PDF тома). */
+    fun epubVolumeFile(index: Int): File = File(dir, "book_vol%02d.epub".format(index))
+    fun epubVolumeFiles(): List<File> =
+        dir.listFiles { f -> f.name.matches(Regex("book_vol\\d+\\.epub")) }
+            ?.sortedBy { it.name } ?: emptyList()
+    /** All produced EPUBs: volumes if split, else the single book.epub. */
+    fun epubs(): List<File> {
+        val v = epubVolumeFiles()
+        return if (v.isNotEmpty()) v else if (epubFile.exists()) listOf(epubFile) else emptyList()
+    }
 
     // ---- Multi-volume books (large blogs split to keep memory low) ----
     /** book_vol01.pdf, book_vol02.pdf … (1-based). */
