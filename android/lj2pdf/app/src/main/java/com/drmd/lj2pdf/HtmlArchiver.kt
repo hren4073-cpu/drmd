@@ -101,6 +101,7 @@ object HtmlArchiver {
     /** Translate text-only block elements in place (keeps images/structure). */
     private suspend fun translateBlocks(content: Element, tr: Translator.Config) {
         val blocks = content.select("p,h1,h2,h3,h4,h5,li,blockquote,figcaption")
+            .toList()
             .filter { it.select("img").isEmpty() && it.text().isNotBlank() }
         blocks.mapPar(2) { el ->
             if (!ConvertBus.cancelRequested) {
