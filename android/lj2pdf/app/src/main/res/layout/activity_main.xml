@@ -291,6 +291,15 @@
                         android:textAppearance="?attr/textAppearanceBodyMedium"
                         android:text="—" />
 
+                    <TextView
+                        android:id="@+id/txtStats"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:paddingTop="2dp"
+                        android:textAppearance="?attr/textAppearanceBodySmall"
+                        android:fontFamily="monospace"
+                        android:text="" />
+
                     <com.google.android.material.progressindicator.LinearProgressIndicator
                         android:id="@+id/progress2"
                         android:layout_width="match_parent"

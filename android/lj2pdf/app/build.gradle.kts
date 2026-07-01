@@ -12,8 +12,8 @@ android {
         minSdk = 21
         // 33 (not 34) so the foreground service needs no Android-14 FGS type.
         targetSdk = 33
-        versionCode = 4
-        versionName = "3.0"
+        versionCode = 5
+        versionName = "3.1"
     }
 
     // A committed, fixed debug keystore so EVERY build (CI or local) is signed
@@ -60,4 +60,6 @@ dependencies {
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     // HTML parser for the multithreaded HTTP download + content extraction.
     implementation("org.jsoup:jsoup:1.17.2")
+    // Pooled HTTP/2 client — connection reuse + multiplexing for fast downloads.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

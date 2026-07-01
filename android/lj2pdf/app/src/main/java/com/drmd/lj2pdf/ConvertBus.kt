@@ -3,6 +3,8 @@ package com.drmd.lj2pdf
 import android.os.Handler
 import android.os.Looper
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Tiny in-process bus between [ConvertService] (producer) and [MainActivity]
@@ -29,7 +31,15 @@ object ConvertBus {
         fun onProgress(done: Int, total: Int, status: String)
         fun onLog(line: String)
         fun onDone(ok: Boolean, book: File?)
+        /** Live network/CPU stats: total bytes, speed (B/s), ping ms, active
+         *  download threads, ETA seconds (-1 if unknown). */
+        fun onStats(bytes: Long, bps: Long, pingMs: Int, threads: Int, etaSec: Int)
     }
+
+    /** Total over-the-wire bytes downloaded this run (fed by the HTTP engine). */
+    val bytesTotal = AtomicLong(0)
+    /** In-flight HTTP requests right now (download-thread gauge). */
+    val activeRequests = AtomicInteger(0)
 
     @Volatile var observer: Observer? = null
     @Volatile var cancelRequested = false
@@ -50,6 +60,8 @@ object ConvertBus {
         running = true
         cancelRequested = false
         awaitingSelection = false
+        bytesTotal.set(0)
+        activeRequests.set(0)
         logText.setLength(0)
         lastStatus = "Starting…"
         Logx.rotate()
@@ -71,6 +83,10 @@ object ConvertBus {
         this.total = total
         lastStatus = status
         onMain { observer?.onProgress(done, total, status) }
+    }
+
+    fun stats(bytes: Long, bps: Long, pingMs: Int, threads: Int, etaSec: Int) {
+        onMain { observer?.onStats(bytes, bps, pingMs, threads, etaSec) }
     }
 
     fun log(line: String) {

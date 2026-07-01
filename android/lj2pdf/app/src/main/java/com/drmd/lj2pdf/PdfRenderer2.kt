@@ -34,11 +34,12 @@ object PdfRenderer2 {
      * entries that produced a non-empty PDF (so the caller merges only those).
      */
     suspend fun renderAll(
-        project: Project, entries: List<PostEntry>, fontSize: Float
+        project: Project, entries: List<PostEntry>, fontSize: Float, parallelism: Int = 0
     ): List<PostEntry> = withContext(Dispatchers.Default) {
         val total = entries.size
         val done = AtomicInteger(0)
-        val par = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+        val cores = Runtime.getRuntime().availableProcessors()
+        val par = (if (parallelism > 0) parallelism else cores).coerceIn(1, cores.coerceAtLeast(1) * 2)
         ConvertBus.log("[pdf] rendering $total post(s) on $par threads…")
         val ok = entries.mapPar(par) { e ->
             if (ConvertBus.cancelRequested) return@mapPar null

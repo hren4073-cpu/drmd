@@ -23,12 +23,16 @@ object EpubBuilder {
     )
 
     /** Build [out] from [entries]' saved HTML. @return true on success. */
-    suspend fun build(project: Project, entries: List<PostEntry>, out: File, fontSize: Int): Boolean {
+    suspend fun build(
+        project: Project, entries: List<PostEntry>, out: File, fontSize: Int, parallelism: Int = 0
+    ): Boolean {
         val usable = entries.filter { project.htmlReady(it.id) }
         if (usable.isEmpty()) return false
 
+        val cores = Runtime.getRuntime().availableProcessors()
+        val par = (if (parallelism > 0) parallelism else cores).coerceIn(1, cores.coerceAtLeast(1) * 2)
         // 1) Generate chapter XHTML in parallel (CPU-bound).
-        val chapters = usable.mapIndexed { i, e -> i to e }.mapPar(4) { (i, e) ->
+        val chapters = usable.mapIndexed { i, e -> i to e }.mapPar(par) { (i, e) ->
             if (ConvertBus.cancelRequested) return@mapPar null
             try {
                 Chapter(

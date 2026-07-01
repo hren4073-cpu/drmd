@@ -1,5 +1,7 @@
 package com.drmd.lj2pdf
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.io.File
@@ -13,7 +15,6 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 object HtmlArchiver {
 
-    private const val DOWNLOAD_PAR = 8     // posts fetched concurrently
     private const val IMG_PAR = 4          // images per post fetched concurrently
 
     // Content container, best-match first (LJ, Habr, osnova, generic).
@@ -38,16 +39,19 @@ object HtmlArchiver {
      * Download [permalinks] into [project]'s html base. Returns the post entries
      * (id, permalink, title) that are now available on disk.
      */
-    suspend fun download(project: Project, permalinks: List<String>): List<PostEntry> {
+    suspend fun download(
+        project: Project, permalinks: List<String>,
+        parallelism: Int = 8, imgOn: Boolean = true, imgMax: Int = 0
+    ): List<PostEntry> {
         val total = permalinks.size
         val done = AtomicInteger(0)
-        ConvertBus.log("[html] downloading $total post(s)…")
-        val entries = permalinks.mapPar(DOWNLOAD_PAR) { perma ->
+        ConvertBus.log("[html] downloading $total post(s) on ${parallelism.coerceIn(1, 32)} threads…")
+        val entries = permalinks.mapPar(parallelism.coerceIn(1, 32)) { perma ->
             if (ConvertBus.cancelRequested) return@mapPar null
             val id = Projects.idOf(perma)
             val entry = try {
                 if (project.htmlReady(id)) reuse(project, id, perma)
-                else fetchOne(project, id, perma)
+                else fetchOne(project, id, perma, imgOn, imgMax)
             } catch (t: Throwable) {
                 ConvertBus.log("[html] FAIL $perma: ${t.message}"); null
             }
@@ -64,7 +68,9 @@ object HtmlArchiver {
         return PostEntry(id, perma, title.ifBlank { "Пост $id" })
     }
 
-    private suspend fun fetchOne(project: Project, id: String, perma: String): PostEntry? {
+    private suspend fun fetchOne(
+        project: Project, id: String, perma: String, imgOn: Boolean, imgMax: Int
+    ): PostEntry? {
         val doc = Http.doc(perma) ?: return null
         val title = TITLE_SELECTORS.firstNotNullOfOrNull { sel ->
             doc.selectFirst(sel)?.text()?.trim()?.ifBlank { null }
@@ -75,14 +81,15 @@ object HtmlArchiver {
         } ?: doc.body() ?: return null
 
         content.select(STRIP).remove()
-        downloadImages(project, id, content)
+        if (imgOn) downloadImages(project, id, content, imgMax)
+        else content.select("img").remove()
 
         project.postHtml(id).writeText(wrap(title, content.html()))
         return PostEntry(id, perma, title)
     }
 
     /** Download every <img> in [content] (in parallel) and rewrite src locally. */
-    private suspend fun downloadImages(project: Project, id: String, content: Element) {
+    private suspend fun downloadImages(project: Project, id: String, content: Element, imgMax: Int) {
         val imgs = content.select("img")
         if (imgs.isEmpty()) return
         val urls = imgs.map { img ->
@@ -90,7 +97,7 @@ object HtmlArchiver {
         }
         val saved = urls.mapIndexedPar(IMG_PAR) { i, url ->
             if (url.isBlank() || ConvertBus.cancelRequested) null
-            else Http.getBytes(url)?.let { saveImage(project, id, i, url, it) }
+            else Http.getBytes(url)?.let { saveImage(project, id, i, url, it, imgMax) }
         }
         imgs.forEachIndexed { i, img ->
             val rel = saved[i]
@@ -104,8 +111,31 @@ object HtmlArchiver {
     }
 
     /** Save image bytes; return the path relative to the html file (img/<id>/n.ext). */
-    private fun saveImage(project: Project, id: String, idx: Int, url: String, bytes: ByteArray): String? {
+    private fun saveImage(project: Project, id: String, idx: Int, url: String, bytes: ByteArray, imgMax: Int): String? {
         if (bytes.size < 64) return null              // 1x1 trackers / empties
+        // Optional downscale to bound storage / speed EPUB (max dimension imgMax).
+        if (imgMax in 1..6000) {
+            try {
+                val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, b)
+                val big = maxOf(b.outWidth, b.outHeight)
+                if (big > imgMax && b.outWidth > 0) {
+                    var sample = 1
+                    while (big / sample > imgMax * 2) sample *= 2
+                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                    if (bmp != null) {
+                        val scale = imgMax.toFloat() / maxOf(bmp.width, bmp.height)
+                        val w = (bmp.width * scale).toInt().coerceAtLeast(1)
+                        val h = (bmp.height * scale).toInt().coerceAtLeast(1)
+                        val small = Bitmap.createScaledBitmap(bmp, w, h, true)
+                        val f = File(project.imgDir(id), "$idx.jpg")
+                        f.outputStream().use { small.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                        return "img/$id/$idx.jpg"
+                    }
+                }
+            } catch (_: Throwable) { /* fall through to raw write */ }
+        }
         val ext = when {
             url.contains(".png", true) -> "png"
             url.contains(".gif", true) -> "gif"

@@ -47,6 +47,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private lateinit var progress2: LinearProgressIndicator
     private lateinit var txtPercent: TextView
     private lateinit var txtCount: TextView
+    private lateinit var txtStats: TextView
     private lateinit var txtStatus: TextView
     private lateinit var btnStart: MaterialButton
     private lateinit var btnCancel: MaterialButton
@@ -119,6 +120,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         progress2 = findViewById(R.id.progress2)
         txtPercent = findViewById(R.id.txtPercent)
         txtCount = findViewById(R.id.txtCount)
+        txtStats = findViewById(R.id.txtStats)
         txtStatus = findViewById(R.id.txtStatus)
         btnStart = findViewById(R.id.btnStart)
         btnCancel = findViewById(R.id.btnCancel)
@@ -243,7 +245,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             }
         }
 
-        intent.withRag(true)
+        intent.withRag(true).withPerf()
         launchService(intent, "Starting…")
     }
 
@@ -517,7 +519,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_PDF_VOLUME, pdfVolume())
             putExtra(ConvertService.EXTRA_EPUB_FONT, epubFont())
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
-        }
+        }.withPerf()
         launchService(intent, if (format == "epub") "EPUB: ${p.name}…" else "PDF: ${p.name}…")
     }
 
@@ -546,6 +548,21 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun pdfFont() = prefs.getInt("pdf_font", 14).coerceIn(8, 32)
     private fun pdfVolume() = prefs.getInt("pdf_volume", 100).coerceIn(10, 500)
     private fun epubFont() = prefs.getInt("epub_font", 18).coerceIn(10, 32)
+    private fun dlThreads() = prefs.getInt("dl_threads", 8).coerceIn(1, 32)
+    private fun cpuThreads() = prefs.getInt("cpu_threads", 0).coerceIn(0, 32)
+    private fun connTimeout() = prefs.getInt("conn_timeout", 25000).coerceIn(5000, 120000)
+    private fun imgOn() = prefs.getBoolean("img_on", true)
+    private fun imgMax() = prefs.getInt("img_max", 0).coerceIn(0, 6000)
+
+    /** Add performance / network settings to any download or build intent. */
+    private fun Intent.withPerf(): Intent {
+        putExtra(ConvertService.EXTRA_DL_THREADS, dlThreads())
+        putExtra(ConvertService.EXTRA_CPU_THREADS, cpuThreads())
+        putExtra(ConvertService.EXTRA_CONN_TIMEOUT, connTimeout())
+        putExtra(ConvertService.EXTRA_IMG_ON, imgOn())
+        putExtra(ConvertService.EXTRA_IMG_MAX, imgMax())
+        return this
+    }
 
     /** Add RAG extras to a service intent so the job uses the user's settings. */
     private fun Intent.withRag(includeAuto: Boolean): Intent {
@@ -558,6 +575,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
     private fun showMore(anchor: View) {
         val pm = android.widget.PopupMenu(this, anchor)
         pm.menu.add(0, 1, 0, "RAG settings (chunk / overlap)")
+        pm.menu.add(0, 4, 0, "Производительность / сеть")
         pm.menu.add(0, 2, 0, "Auto-RAG after archive").apply {
             isCheckable = true; isChecked = autoRag()
         }
@@ -565,6 +583,7 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         pm.setOnMenuItemClickListener { mi ->
             when (mi.itemId) {
                 1 -> { ragSettingsDialog(); true }
+                4 -> { perfSettingsDialog(); true }
                 2 -> {
                     prefs.edit().putBoolean("auto_rag", !autoRag()).apply()
                     toast("Auto-RAG after archive: ${if (autoRag()) "on" else "off"}")
@@ -649,6 +668,34 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             .show()
     }
 
+    private fun perfSettingsDialog() {
+        if (!alive()) return
+        val box = settingsBox()
+        val dl = box.numField("Потоков загрузки (1–32)", dlThreads())
+        val cpu = box.numField("Потоков сборки (0 = все ядра)", cpuThreads())
+        val to = box.numField("Таймаут соединения (мс)", connTimeout())
+        val imax = box.numField("Макс. размер картинки, px (0 = ориг.)", imgMax())
+        val imgCb = android.widget.CheckBox(this).apply {
+            text = "Скачивать картинки"; isChecked = imgOn()
+        }
+        box.addView(imgCb)
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Производительность / сеть")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit()
+                    .putInt("dl_threads", (dl.text.toString().toIntOrNull() ?: 8).coerceIn(1, 32))
+                    .putInt("cpu_threads", (cpu.text.toString().toIntOrNull() ?: 0).coerceIn(0, 32))
+                    .putInt("conn_timeout", (to.text.toString().toIntOrNull() ?: 25000).coerceIn(5000, 120000))
+                    .putInt("img_max", (imax.text.toString().toIntOrNull() ?: 0).coerceIn(0, 6000))
+                    .putBoolean("img_on", imgCb.isChecked)
+                    .apply()
+                toast("Saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun showAbout() {
         if (!alive()) return
         androidx.appcompat.app.AlertDialog.Builder(this)
@@ -716,11 +763,12 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
             putExtra(ConvertService.EXTRA_FROM, 1)
             putExtra(ConvertService.EXTRA_MAX, 2000)
             treeUri?.let { putExtra(ConvertService.EXTRA_TREE, it) }
-        }
+        }.withPerf()
         launchService(intent, if (deep) "Deep rescan: ${p.name}…" else "Updating ${p.name}…")
     }
 
     private fun setBusy(busy: Boolean) {
+        if (busy) txtStats.text = ""
         btnStart.isEnabled = !busy
         btnCancel.isEnabled = busy
         progress.visibility = if (busy) View.VISIBLE else View.GONE
@@ -788,6 +836,26 @@ class MainActivity : AppCompatActivity(), ConvertBus.Observer {
         progress.progress = done
         setGauge(done, total)
     }
+
+    override fun onStats(bytes: Long, bps: Long, pingMs: Int, threads: Int, etaSec: Int) {
+        val parts = ArrayList<String>()
+        parts.add("↓ ${fmtBytes(bytes)}")
+        if (bps > 0) parts.add("${fmtBytes(bps)}/s")
+        if (pingMs >= 0) parts.add("ping ${pingMs} ms")
+        if (threads > 0) parts.add("$threads пот")
+        if (etaSec in 1..359999) parts.add("~${fmtEta(etaSec)}")
+        txtStats.text = parts.joinToString(" · ")
+    }
+
+    private fun fmtBytes(b: Long): String = when {
+        b >= 1024L * 1024 * 1024 -> "%.1f GB".format(b / 1024.0 / 1024 / 1024)
+        b >= 1024L * 1024 -> "%.1f MB".format(b / 1024.0 / 1024)
+        b >= 1024L -> "%.0f KB".format(b / 1024.0)
+        else -> "$b B"
+    }
+
+    private fun fmtEta(s: Int): String =
+        if (s >= 60) "${s / 60} мин" else "$s с"
 
     /** Determinate readiness gauge (circle + bar + count). */
     private fun setGauge(done: Int, total: Int) {

@@ -9,9 +9,15 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import java.net.InetSocketAddress
+import java.net.Socket
 import androidx.core.content.FileProvider
 import androidx.documentfile.provider.DocumentFile
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
@@ -62,6 +68,11 @@ class ConvertService : Service() {
         const val EXTRA_PDF_FONT = "pdfFont"   // body font size (pt)
         const val EXTRA_PDF_VOLUME = "pdfVolume" // posts per том
         const val EXTRA_EPUB_FONT = "epubFont"
+        const val EXTRA_DL_THREADS = "dlThreads"     // parallel HTTP downloads
+        const val EXTRA_CPU_THREADS = "cpuThreads"   // parallel PDF/EPUB build
+        const val EXTRA_CONN_TIMEOUT = "connTimeout" // ms
+        const val EXTRA_IMG_ON = "imgOn"             // download images?
+        const val EXTRA_IMG_MAX = "imgMax"           // max image dimension px
         private const val RAG_CHUNK = 1000
         private const val RAG_OVERLAP = 150
         // Split big blogs: 100 posts = 1 PDF volume, so each merge only loads
@@ -84,6 +95,8 @@ class ConvertService : Service() {
     private var renderer: WebViewPdfRenderer? = null
     private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var sampler: Job? = null
     @Volatile private var selection: CompletableDeferred<Int>? = null
 
     override fun onCreate() {
@@ -107,10 +120,17 @@ class ConvertService : Service() {
         val name = intent.getStringExtra(EXTRA_NAME) ?: "book"
         val tree = intent.getStringExtra(EXTRA_TREE)
 
+        // Apply network settings (threads + timeout) before anything fetches.
+        val dlThreads = intent.getIntExtra(EXTRA_DL_THREADS, 8).coerceIn(1, 32)
+        val connTimeout = intent.getIntExtra(EXTRA_CONN_TIMEOUT, 25_000).toLong()
+        Http.configure(dlThreads, connTimeout)
+
         running = true
         acquireWakeLock()
+        acquireWifiLock()
         ConvertBus.start(0)
         startForeground(NID, progressNotif("Starting…", 0, 0, true))
+        startSampler(intent.getStringExtra(EXTRA_BASE)?.let { Uri.parse(it).host })
 
         scope.launch {
             try {
@@ -178,7 +198,10 @@ class ConvertService : Service() {
             toGet = scanned.take(count)
         }
 
-        val fresh = HtmlArchiver.download(project, toGet)
+        val dlThreads = intent.getIntExtra(EXTRA_DL_THREADS, 8)
+        val imgOn = intent.getBooleanExtra(EXTRA_IMG_ON, true)
+        val imgMax = intent.getIntExtra(EXTRA_IMG_MAX, 0)
+        val fresh = HtmlArchiver.download(project, toGet, dlThreads, imgOn, imgMax)
         // Rebuild the index: full/deep scans use archive order; updates prepend.
         val byId = (fresh + existing).associateBy { it.id }
         val finalEntries = if (existing.isEmpty() || deep)
@@ -202,7 +225,8 @@ class ConvertService : Service() {
         }
         val fontSize = intent.getIntExtra(EXTRA_PDF_FONT, 14).coerceIn(8, 32).toFloat()
         val volume = intent.getIntExtra(EXTRA_PDF_VOLUME, VOLUME_SIZE).coerceIn(10, 500)
-        val rendered = PdfRenderer2.renderAll(project, entries, fontSize)
+        val cpu = intent.getIntExtra(EXTRA_CPU_THREADS, 0)
+        val rendered = PdfRenderer2.renderAll(project, entries, fontSize, cpu)
         if (rendered.isEmpty() || ConvertBus.cancelRequested) { finish(false, null); return }
         val book = mergeProject(project, rendered, tree, volume)
         finish(book != null, book)
@@ -219,11 +243,12 @@ class ConvertService : Service() {
             ConvertBus.log("[epub] no HTML base — download first"); finish(false, null); return
         }
         val font = intent.getIntExtra(EXTRA_EPUB_FONT, 18).coerceIn(10, 32)
+        val cpu = intent.getIntExtra(EXTRA_CPU_THREADS, 0)
         ConvertBus.progress(0, entries.size, "Building EPUB…")
         nm.notify(NID, progressNotif("Building EPUB…", 0, 0, true))
         val out = project.epubFile
         val ok = withContext(Dispatchers.IO) {
-            try { EpubBuilder.build(project, entries, out, font) }
+            try { EpubBuilder.build(project, entries, out, font, cpu) }
             catch (t: Throwable) { ConvertBus.log("[epub] error: ${t.message}"); false }
         }
         if (ok && tree != null) copyToTree(out, tree, "${project.name}.epub", "application/epub+zip")
@@ -640,7 +665,9 @@ class ConvertService : Service() {
 
     private fun finishRag(ok: Boolean, file: File?) {
         running = false
+        sampler?.cancel(); sampler = null
         releaseWakeLock()
+        releaseWifiLock()
         stopForeground(true)
         val n = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(if (ok) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error)
@@ -751,8 +778,10 @@ class ConvertService : Service() {
 
     private fun finish(ok: Boolean, book: File?) {
         running = false
+        sampler?.cancel(); sampler = null
         renderer?.destroy(); renderer = null
         releaseWakeLock()
+        releaseWifiLock()
         stopForeground(true)
         nm.notify(NID + 1, if (ok && book != null) doneNotif(book) else failedNotif())
         ConvertBus.finished(ok, book)
@@ -788,6 +817,60 @@ class ConvertService : Service() {
     private fun releaseWakeLock() {
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Throwable) {}
         wakeLock = null
+    }
+
+    /** Keep Wi-Fi at full power during downloads (radio used to the full). */
+    @Suppress("DEPRECATION")
+    private fun acquireWifiLock() {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val mode = if (Build.VERSION.SDK_INT >= 29)
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wm.createWifiLock(mode, "lj2pdf:wifi").apply {
+                setReferenceCounted(false); acquire()
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun releaseWifiLock() {
+        try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (_: Throwable) {}
+        wifiLock = null
+    }
+
+    /** Periodically publish network/CPU stats (speed, ping, threads, ETA). */
+    private fun startSampler(host: String?) {
+        sampler?.cancel()
+        sampler = scope.launch {
+            var prevBytes = 0L
+            var prevDone = 0
+            var prevT = System.nanoTime()
+            var ping = -1
+            var tick = 0
+            while (isActive) {
+                delay(1000)
+                tick++
+                val now = System.nanoTime()
+                val dt = (now - prevT) / 1e9
+                val bytes = ConvertBus.bytesTotal.get()
+                val bps = if (dt > 0) ((bytes - prevBytes) / dt).toLong().coerceAtLeast(0) else 0
+                val done = ConvertBus.done
+                val total = ConvertBus.total
+                val postsPerSec = if (dt > 0) (done - prevDone) / dt else 0.0
+                val eta = if (postsPerSec > 0.01 && total > done)
+                    ((total - done) / postsPerSec).toInt() else -1
+                prevBytes = bytes; prevDone = done; prevT = now
+                if (tick % 3 == 0 && host != null) ping = pingHost(host)
+                ConvertBus.stats(bytes, bps, ping, ConvertBus.activeRequests.get(), eta)
+            }
+        }
+    }
+
+    private suspend fun pingHost(host: String): Int = withContext(Dispatchers.IO) {
+        try {
+            val t0 = System.nanoTime()
+            Socket().use { it.connect(InetSocketAddress(host, 443), 2000) }
+            ((System.nanoTime() - t0) / 1_000_000).toInt()
+        } catch (_: Throwable) { -1 }
     }
 
     private fun createChannel() {
